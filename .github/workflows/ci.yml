@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install ruff (a development tool; the tools themselves have no dependencies)
+        run: python -m pip install ruff==0.16.1
+      - name: Gates (ruff check · ruff format --check · unittest)
+        # The same script `just gates` runs locally, so the two cannot drift. The
+        # integration tests need a real gonk (`ikigai-gonk` and `ikigai` on PATH), which
+        # this runner does not have; they skip and print why.
+        run: scripts/gates.sh

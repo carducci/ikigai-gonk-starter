@@ -1,0 +1,9 @@
+# Not a package: this file only configures the linter. The tools here are standard-library
+# Python (3.11 or later, for tomllib) with no dependencies; ruff is a development tool.
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

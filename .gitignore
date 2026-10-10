@@ -1,0 +1,7 @@
+# Per working tree: how this machine reaches gonk, and the claim this tree holds.
+.gonk/local.toml
+.gonk/state/
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
