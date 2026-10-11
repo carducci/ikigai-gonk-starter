@@ -108,7 +108,10 @@ Output is one line per finding, `PASS|FAIL|WARN|INFO <check>: <detail>`, then `s
 exit 0 with no FAIL, 1 with at least one, 2 on usage. Two more rules belong to the hub, because
 only it knows them: the `INFO identity:` line must name `hubdiag` (a wrong `User` in the ssh
 stanza otherwise probes as someone else), and hubdiag must hold **no** gh token (`INFO gh-token:`
-says `holds no gh token` or `no gh installed`).
+says `holds no gh token` or `no gh installed`). The gh section also reports the system's gh
+version, and WARNs below 2.50.0, the first gh with `gh pr checks --json`, printing the upgrade
+line (GitHub's apt repository on Debian and Ubuntu, whose own 24.04 package is 2.45.0). A worker
+with an older gh still works: it reads CI from the Actions runs instead, the less exact path.
 
 ### The facts file
 
@@ -122,6 +125,7 @@ says `holds no gh token` or `no gh installed`).
 | `result: PASS` or `result: FAIL` | its verdict, followed by each failing line indented two spaces (`  FAIL …`) |
 | `[agent]`, `[<admin>]` | the account the following lines are about |
 | `INFO gh-token: …` | whether that account holds a gh token, and of what kind, **by prefix only**: `github_pat_` fine-grained, `ghp_` classic, `gho_` gh's OAuth login (the token is never printed or stored) |
+| `INFO gh-version: …` | the system's gh and its version (a gh older than 2.50.0 is a `WARN` in the probe's own output, above, and does not reach this file) |
 | `INFO tool <name>: <path>  (<version>)` or `… absent` | the tools in that account's home and on the system |
 | `INFO ai-agent <claude\|codex\|hermes>: <path>  (<version>) · login: …` | the coding agents, and whether a login is held, **by the presence of its credential file only** (`~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.hermes/auth.json` or `.env`; never opened) |
 | `INFO ai-agent hermes-profile <name>[ (active)]: provider …, model … · login: …` | each hermes profile, with only those two keys of its `config.yaml` |
@@ -368,8 +372,11 @@ is the commented template):
 | `gh`, `stop_file` | `gh`, `.gonk/state/worker/stop` | the GitHub CLI; the file that stops the loop between items |
 
 The presets are each agent's documented non-interactive form (`claude -p`, `codex exec`,
-`hermes -z`). **The hermes preset has run an item end to end on a Linux worker**. The others
-are untested, so try one on an item of no consequence with `run --once` first. An unattended
+`hermes -z`). **Hermes and Codex have each run an item end to end on a Linux worker**: hermes
+as its preset, and Codex with its sandbox opened, `command = ["codex", "exec", "--sandbox",
+"danger-full-access", "{prompt}"]`, because it commits, pushes and opens the pull request,
+which its default sandbox refuses; the agent's own Unix account is the boundary. Claude Code
+is untested, so try it on an item of no consequence with `run --once` first. An unattended
 agent also needs its own permission settings (Claude Code's allowlist or permission mode,
 Codex's sandbox and approval policy); the worker does not choose them for you.
 

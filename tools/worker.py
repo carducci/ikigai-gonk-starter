@@ -87,11 +87,14 @@ def spoken(total: float) -> str:
 # --------------------------------------------------------------------------- config
 
 # The agents a worker can run, as command templates. Each is the documented non-interactive
-# form of that agent's command line. The hermes preset has run an item end to end on a Linux
-# worker; the others are untested, so try one with `run --once` on an item of no consequence
-# first. The placeholders are listed in TOKENS. An unattended agent also needs its own
-# permission settings (Claude Code's allowlist or permission mode, Codex's sandbox and
-# approval policy); the worker does not choose them for you.
+# form of that agent's command line. Hermes and Codex have each run an item end to end on a
+# Linux worker: hermes as its preset, Codex as `codex exec --sandbox danger-full-access
+# {prompt}`, since it commits, pushes and opens the pull request, which its default sandbox
+# refuses (the agent's own Unix account is the boundary). Claude Code is untested, so try it
+# with `run --once` on an item of no consequence first. The placeholders are listed in TOKENS.
+# An unattended agent also needs its own permission settings (Claude Code's allowlist or
+# permission mode, Codex's sandbox and approval policy); the worker does not choose them for
+# you.
 PRESETS: dict[str, list[str]] = {
     "claude": ["claude", "-p", "{prompt}"],
     "codex": ["codex", "exec", "{prompt}"],
@@ -331,8 +334,14 @@ class Ledger:
         command = f"sink {self.cfg.resource('claim')} item={number} lease={lease}"
         return self.ikigai.run(command, stdin=holder)
 
-    def release(self, number: int, note: str = "") -> gonk.Answer:
-        return self.ikigai.run(f"delete {self.cfg.resource('claim')} item={number}", stdin=note)
+    def release(self, number: int, holder: str) -> gonk.Answer:
+        """Release the claim only if `holder` still holds it: `from=` makes the DELETE a
+        compare-and-set, refused with nothing released when the claim changed hands. It
+        carries no note. The cli gives a batch's stdin only to a content-less SINK, never to a
+        DELETE, so a note piped here never reached the item (ledger item 1229): post a note
+        with `comment` first."""
+        command = f"delete {self.cfg.resource('claim')} item={number} from={holder}"
+        return self.ikigai.run(command, stdin="")
 
     def comment(self, number: int, text: str) -> gonk.Answer:
         return self.ikigai.run(f"sink {self.cfg.resource('comment')} item={number}", stdin=text)
@@ -570,6 +579,9 @@ class PullRequest:
     ci: str = "unknown"  # green, red, pending, none, unknown
     ci_source: str = ""
     ci_detail: str = ""
+    merged_at: str = ""  # GitHub's mergedAt, ISO 8601; empty when not merged
+    merged_by: str = ""  # the merger's login, which cannot tell an agent from its dispatcher
+    # when both use one GitHub identity: when the merge happened can (ledger item 1232)
 
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -593,7 +605,7 @@ class GitHub:
     def pull_requests(self, branch: str) -> tuple[list[PullRequest], str | None]:
         done = self.run(
             "pr", "list", "-R", self.slug, "--head", branch, "--state", "all",
-            "--json", "number,url,state,headRefOid",
+            "--json", "number,url,state,headRefOid,mergedAt,mergedBy",
         )  # fmt: skip
         if done.returncode != 0:
             return [], (done.stderr or done.stdout).strip() or f"gh exit {done.returncode}"
@@ -602,7 +614,15 @@ class GitHub:
         except ValueError as e:
             return [], f"gh pr list did not answer JSON: {e}"
         prs = [
-            PullRequest(r["number"], r["url"], r["state"], r.get("headRefOid", "")) for r in rows
+            PullRequest(
+                r["number"],
+                r["url"],
+                r["state"],
+                r.get("headRefOid", ""),
+                merged_at=r.get("mergedAt") or "",
+                merged_by=(r.get("mergedBy") or {}).get("login") or "",
+            )
+            for r in rows
         ]
         return sorted(prs, key=lambda p: p.number), None
 
@@ -846,7 +866,7 @@ class Worker:
         log(f"claimed {display} for `{holder}` on a {self.wc.lease} lease (repo:{repo.name})")
         other = self.repo_holder(repo.name, gonk.iso_now(), exclude=number)
         if other:
-            self.ledger.release(number, "")
+            self.ledger.release(number, holder)
             return Outcome(NOTHING, f"backed off {display}: repo:{repo.name} is busy: {other}")
         beat = Heartbeat(self.ledger, number, holder, self.wc.lease, self.wc.renew_every)
         beat.start()
@@ -898,6 +918,7 @@ class Worker:
             except OSError as e:
                 raise StepFailed(f"the agent `{argv[0]}` did not start: {e}") from e
             ended, code = self.watch(proc, started, beat)
+        exited = datetime.now(UTC)
         took = spoken(time.monotonic() - started)
         where = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
         gh = GitHub(self.wc.gh, repo.github)
@@ -932,12 +953,9 @@ class Worker:
             lines.append(f"  from {pr.ci_source}" + (f": {pr.ci_detail}" if pr.ci_detail else ""))
         if pr_err:
             lines.append(f"- the pull requests could not be listed: {pr_err}")
-        merged = [pr.url for pr in prs if pr.state.upper() == "MERGED"]
-        if merged:
-            lines.append(
-                f"- WARNING: merged by the agent, against its rules: {', '.join(merged)}. Only "
-                "the repository's branch protection can stop that; the worker cannot."
-            )
+        for pr in prs:
+            if pr.state.upper() == "MERGED":
+                lines.append(merge_line(pr, exited))
         agent = f"`{argv[0]}` exited {code} after {took}" if code is not None else ""
 
         if ended in ("overrun", "stopped"):
@@ -1040,15 +1058,19 @@ class Worker:
         return url if gonk.EVIDENCE_SHAPE.match(url) else None
 
     def release_if_ours(self, number: int, note: str) -> bool:
-        """Release only a claim that is still this worker's: a claim's DELETE releases
-        whoever holds it. A note that cannot ride the release is posted as a comment."""
+        """Post the note, then release only a claim that is still this worker's. The note is
+        always a comment of its own, posted first, whoever holds the claim: one handed to the
+        release never reached the item (ledger item 1229). The release is a compare-and-set on
+        this worker's holder, since a claim's DELETE without `from=` releases whoever holds it."""
+        if note:
+            posted = self.ledger.comment(number, note)
+            if not posted.ok:
+                log(f"could not post the hand-back note on item {number}: {posted.text()}")
         item, _ = self.ledger.item(number)
         held = ((item or {}).get("claim") or {}).get("holder")
         if held != self.cfg.holder:
-            if note:
-                self.ledger.comment(number, note)
             return False
-        return self.ledger.release(number, note).ok
+        return self.ledger.release(number, self.cfg.holder).ok
 
     # ----------------------------------------------------------------- the loop
 
@@ -1069,6 +1091,27 @@ class Worker:
                 self.shutdown.wait(self.wc.poll)
         log("stopped by a signal")
         return 0
+
+
+def merge_line(pr: PullRequest, exited: datetime) -> str:
+    """Who merged a pull request the run opened, as far as the worker can tell. The login cannot
+    tell the agent from its dispatcher when both use one GitHub identity, so the time decides: a
+    merge after the agent exited is not the agent's. One at or before the exit, or at a time
+    GitHub did not give, is called out, though the dispatcher may have merged while the agent
+    still ran (ledger item 1232 was that case: merged 30 s before the agent exited)."""
+    by = f" by {pr.merged_by}" if pr.merged_by else ""
+    try:
+        at = gonk.parse_instant(pr.merged_at) if pr.merged_at else None
+    except ValueError:
+        at = None
+    if at is not None and at > exited:
+        return f"- {pr.url} was merged{by} at {pr.merged_at}, after the agent exited"
+    when = f" at {pr.merged_at}" if pr.merged_at else ""
+    return (
+        f"- WARNING: merged{when}{by} before the agent exited: by the agent, against its "
+        f"rules, unless someone else merged it while it ran: {pr.url}. Only the repository's "
+        "branch protection can stop an agent merging; the worker cannot."
+    )
 
 
 def outcome_word(outcome: Outcome, beat: Heartbeat) -> str:
