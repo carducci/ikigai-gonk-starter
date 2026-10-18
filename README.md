@@ -28,7 +28,27 @@ its dispatcher and `next` stops offering it to the next worker (ikigai-ledger 0.
 item 1199). `reject` is the dispatcher's answer when the evidence does not hold: `rejects=true`
 clears that state and the item is ready again. Both keep the `Evidence:` prefix in the comment,
 so a ledger older than 0.8.0 — which ignores the argument it does not know — reads the hand-back
-the same way.
+the same way. Over the owner's socket, where gonk names nobody, `report` and `close` pass this
+working tree's holder as the comment's free-text `author`, so a reader can tell hand-backs
+apart; over QUIC gonk names the machine itself, and nothing is added.
+
+### Evidence before there is a forge
+
+`report` and `close` accept any `http(s)` URL: the check is the URL's shape, not what it
+points at. The rules ask for the pull request, and a repository with no remote yet has none,
+so the easy wrong answer is a made-up one. Give gonk the repository as a browse root instead
+(`gonk.browse.root = "<name>=<path to this checkout>"` in gonk's `config.toml`, then restart
+gonk) and use gonk's own page for what changed as the evidence, with the commit in the note:
+
+```sh
+python3 tools/gonk.py report 7 \
+    --evidence http://127.0.0.1:1062/browse/urn:repo:<name>:file:<path> \
+    --note "fixed in <commit>; scripts/test.py exit 0; merged locally"
+```
+
+That page is served by gonk and shows the file as the working tree has it. It is local
+evidence and proves nothing to a reader on another machine, so a repository that will be
+shared gets a forge, and its pull requests, before its first hand-back.
 
 That is the whole protocol, and [`AGENTS.md`](AGENTS.md) states its rules: claim before you
 write, one agent per item and per working tree, reproduce before you fix, every change
