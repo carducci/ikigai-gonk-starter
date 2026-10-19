@@ -470,7 +470,9 @@ def main(argv: list[str] | None = None) -> int:
         f"in {dest}: {len(written)} files"
     )
     steps = [
-        "git init, then commit everything it wrote (the one commit where every file is yours)",
+        "git init -b main, then commit everything it wrote (the one commit where every file is "
+        "yours; -b main because the worker loop branches from origin/main, and git's own "
+        "default is still master where init.defaultBranch is unset)",
         "python3 scripts/test.py                      every test, as CI runs them",
         "python3 tools/gonk.py init --ledger <name> --socket ~/.ikigai/gonk.sock --holder <you>",
     ]
