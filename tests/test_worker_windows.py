@@ -48,6 +48,13 @@ class TheElevationRefusal(unittest.TestCase):
         self.assertIn("refusing to run", err.getvalue())
         self.assertIn("elevated" if os.name == "nt" else "as root", err.getvalue())
 
+    @unittest.skipIf(os.name == "nt", "root and geteuid are POSIX")
+    def test_root_is_elevated_on_posix(self):
+        with mock.patch.object(worker.os, "geteuid", lambda: 0):
+            self.assertTrue(worker.elevated())
+        with mock.patch.object(worker.os, "geteuid", lambda: 1000):
+            self.assertFalse(worker.elevated())
+
     @unittest.skipUnless(os.name == "nt", "the administrator token exists only on Windows")
     def test_the_real_token_check_answers_with_a_bool(self):
         self.assertIsInstance(worker.elevated(), bool)
