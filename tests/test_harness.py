@@ -15,6 +15,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -265,6 +266,20 @@ class TheFiringLog(unittest.TestCase):
             t.join()
         seqs = [f.seq for f in harness.read_firings(self.repo).firings]
         self.assertEqual(sorted(seqs), list(range(1, 21)))
+
+    def test_a_held_lock_makes_a_second_writer_wait_and_then_time_out(self):
+        path = self.repo / harness.FIRINGS_FILE
+        path.parent.mkdir(parents=True)
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
+        held, other = os.open(path, flags), os.open(path, flags)
+        self.addCleanup(os.close, other)
+        self.addCleanup(os.close, held)
+        harness._lock(held)
+        with mock.patch.object(harness, "LOCK_WAIT", 0.1):
+            began = time.monotonic()
+            with self.assertRaises(TimeoutError):
+                harness._lock(other)
+        self.assertGreaterEqual(time.monotonic() - began, 0.1)
 
 
 # --------------------------------------------------------------------------- the graph
