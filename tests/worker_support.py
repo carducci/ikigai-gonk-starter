@@ -289,7 +289,7 @@ class Rig:
         (self.checkout / ".gonk" / "gonk.toml").write_text(f'ledger = "{ledger_name}"\n')
         sock = target or str(self.tmp / "g.sock")
         (self.checkout / ".gonk" / "local.toml").write_text(
-            f'transport = "socket"\nsocket = "{sock}"\nholder = "w1"\n'
+            f'transport = "socket"\nsocket = {json.dumps(sock)}\nholder = "w1"\n'
         )
         self.agent_flags: list[str] = []
 
@@ -331,8 +331,18 @@ class Rig:
         lines = [f"{k} = {v}" for k, v in settings.items()]
         lines.append(f"gh = {json.dumps(self.gh_argv)}")
         lines += ["", "[agent]", f"command = {json.dumps(command)}"]
-        lines += ["", "[repos.lib]", f'remote = "{self.origin}"', 'github = "acme/lib"']
-        lines += ["", "[repos.other]", f'remote = "{self.origin}"', 'github = "acme/other"']
+        lines += [
+            "",
+            "[repos.lib]",
+            f"remote = {json.dumps(str(self.origin))}",
+            'github = "acme/lib"',
+        ]
+        lines += [
+            "",
+            "[repos.other]",
+            f"remote = {json.dumps(str(self.origin))}",
+            'github = "acme/other"',
+        ]
         path = self.checkout / ".gonk" / file
         path.write_text("\n".join(lines) + "\n")
         return path

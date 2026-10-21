@@ -508,7 +508,7 @@ class SensorsFire(unittest.TestCase):
     def test_worker_refuses_root(self):
         rig = self.worker_rig()
         err = io.StringIO()
-        with mock.patch.object(worker.os, "geteuid", lambda: 0), contextlib.redirect_stderr(err):
+        with mock.patch.object(worker, "elevated", lambda: True), contextlib.redirect_stderr(err):
             code = worker.main(["--repo", str(rig.checkout), "run", "--once"], FakeLedger())
         self.assertEqual(code, worker.CONFIG)
         assert_fired(self, rig.checkout, "worker-refuses-root")
