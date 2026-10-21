@@ -1077,20 +1077,76 @@ def agent_argv(command: list[str], values: dict[str, str]) -> list[str]:
     return out
 
 
+def job_for(proc: subprocess.Popen) -> None:
+    """Windows: put the agent in a job object that dies with the worker. Its children join the
+    job, so one call can end the tree even after the agent, their parent, has gone."""
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateJobObjectW.restype = wintypes.HANDLE
+    k.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    proc.job = None
+    job = k.CreateJobObjectW(None, None)
+    if not job:
+        return
+    # JOBOBJECT_EXTENDED_LIMIT_INFORMATION is 144 bytes on x64 (112 on x86); the
+    # LimitFlags DWORD sits at offset 16 either way.
+    info = ctypes.create_string_buffer(144 if ctypes.sizeof(ctypes.c_void_p) == 8 else 112)
+    ctypes.c_uint32.from_buffer(info, 16).value = 0x2000  # KILL_ON_JOB_CLOSE
+    process = k.OpenProcess(0x0101, False, proc.pid)  # SET_QUOTA | TERMINATE
+    if (
+        process
+        and k.SetInformationJobObject(job, 9, info, len(info))
+        and k.AssignProcessToJobObject(job, process)
+    ):
+        proc.job = job
+    else:
+        k.CloseHandle(job)  # no job: stop_process falls back to taskkill
+    if process:
+        k.CloseHandle(process)
+
+
+def close_job(proc: subprocess.Popen) -> None:
+    """Windows: let go of the agent's job once it has exited. Closing it kills what is left."""
+    job, proc.job = getattr(proc, "job", None), None
+    if job:
+        import ctypes
+
+        ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(job))
+
+
 def stop_process(proc: subprocess.Popen, grace: int) -> None:
     """SIGTERM to the agent's whole process group, then SIGKILL after the grace period. The
     agent was started in a session of its own, so its children go with it, and the worker
     (in another group) is not signaled. On Windows it is Ctrl+Break to the agent's process group,
-    then `taskkill /T /F` on the tree, since no signal reaches a console child's children."""
+    then its job object ended whatever the agent did, since a child can ignore the break and
+    outlive its parent where `taskkill /T` cannot find it; `taskkill /T /F` if there is no job."""
     if os.name == "nt":
         try:
             proc.send_signal(signal.CTRL_BREAK_EVENT)
             proc.wait(timeout=grace)
-            return
         except (OSError, subprocess.TimeoutExpired):
             pass  # no console to break into, or it ignored the break
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        job = getattr(proc, "job", None)
+        if job:
+            import ctypes
+
+            ctypes.WinDLL("kernel32").TerminateJobObject(ctypes.c_void_p(job), 1)
+        elif proc.poll() is None:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
         proc.wait(timeout=30)
+        close_job(proc)
         return
     for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 30)):
         try:
@@ -1349,7 +1405,11 @@ class Worker:
                 )
             except OSError as e:
                 raise StepFailed(f"the agent `{argv[0]}` did not start: {e}") from e
+            if os.name == "nt":
+                job_for(proc)
             ended, code = self.watch(proc, started, beat)
+            if os.name == "nt":
+                close_job(proc)
         exited = datetime.now(UTC)
         took = spoken(time.monotonic() - started)
         where = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
