@@ -181,7 +181,7 @@ def _lock(fd: int) -> None:
 
 
 def _unlock(fd: int) -> None:
-    if fcntl is None and msvcrt is not None:  # flock goes with the close; msvcrt wants its byte named
+    if fcntl is None and msvcrt is not None:  # flock goes with the close; msvcrt doesn't
         with contextlib.suppress(OSError):  # never locked: the wait timed out
             os.lseek(fd, LOCK_AT, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
