@@ -4,7 +4,8 @@ would, and does what its flags say: record its brief, sleep, edit a file, commit
 branch and "open a pull request" through the stub gh, or report evidence without one.
 
     fake_agent.py --record <dir> --gh "<argv of the stub gh>" --branch B --item N
-                  [--sleep S] [--child] [--stubborn] [--no-pr] [--evidence URL --report-file P]
+                  [--sleep S] [--child] [--deaf-child] [--stubborn] [--no-pr]
+                  [--evidence URL --report-file P]
                   [--exit N] -- <prompt>
 """
 
@@ -36,6 +37,7 @@ def main() -> int:
     p.add_argument("--item", required=True)
     p.add_argument("--sleep", type=float, default=0)
     p.add_argument("--child", action="store_true")  # start a child that outlives a polite stop
+    p.add_argument("--deaf-child", action="store_true")  # the child alone ignores Ctrl+Break
     p.add_argument("--stubborn", action="store_true")  # ignore Ctrl+Break (Windows)
     p.add_argument("--no-pr", action="store_true")
     p.add_argument("--evidence")
@@ -51,8 +53,14 @@ def main() -> int:
     (record / f"started-{args.item}").write_text(str(time.time()))
     if args.stubborn and hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, signal.SIG_IGN)
-    if args.child:
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+    if args.child or args.deaf_child:
+        # SIG_IGN is not inherited, so the child sets it itself
+        deaf = (
+            "import signal; signal.signal(signal.SIGBREAK, signal.SIG_IGN); "
+            if args.deaf_child
+            else ""
+        )
+        child = subprocess.Popen([sys.executable, "-c", deaf + "import time; time.sleep(300)"])
         (record / f"child-{args.item}").write_text(f"{os.getpid()} {child.pid}")
     time.sleep(args.sleep)
 

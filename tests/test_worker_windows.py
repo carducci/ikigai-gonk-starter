@@ -127,7 +127,11 @@ class TheLoop(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "the process-tree kill is the Windows path")
     def test_a_timed_out_agent_is_killed_with_its_child(self):
-        for flags in (["--child"], ["--child", "--stubborn"]):  # polite, then deaf to the break
+        for flags in (
+            ["--child"],
+            ["--child", "--stubborn"],
+            ["--deaf-child"],
+        ):  # polite, deaf, orphaned
             with self.subTest(flags=flags):
                 self.rig.agent_flags = ["--sleep", "60", *flags]
                 n = self.ledger.file(f"Too big {flags}", ["worker:w1", "repo:lib"])
