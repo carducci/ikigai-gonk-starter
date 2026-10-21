@@ -792,7 +792,7 @@ A Windows machine is a worker through **WSL2**: a Linux distribution in a small 
 on Linux above, plus what WSL changes. Native Windows is not supported as a whole (`ikigai-cli` builds for Windows,
 but there is no released Windows build yet), though `tools/worker.py` itself now runs there on Python 3.11+: it takes the
 repository lock with `msvcrt`, starts the agent in its own process group and kills its tree
-(`taskkill /T`), stops on the stop file or Ctrl+Break, and refuses to run elevated. What WSL changes:
+(a job object, so children that ignore Ctrl+Break go too), stops on the stop file or Ctrl+Break, and refuses to run elevated. What WSL changes:
 
 - **systemd is off by default.** Without it there is no linger, no user unit and no journal, so
   the worker loop cannot run as a service. `/etc/wsl.conf` `[boot] systemd=true` turns it on;
