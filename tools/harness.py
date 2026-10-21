@@ -63,10 +63,14 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-try:  # POSIX; on a platform without it the log is written unlocked (docs/windows.md: use WSL2)
+try:  # POSIX flock; Windows has msvcrt.locking instead; with neither the log is written unlocked
     import fcntl
 except ImportError:  # pragma: no cover
     fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover
+    msvcrt = None
 
 H = "https://ikigai-rs.dev/ns/harness#"
 LOG = "https://ikigai-rs.dev/ns/log#"
@@ -94,6 +98,7 @@ KINDS = {"refusal": "harness:Refusal", "warning": "harness:Warning"}
 VERSION_LINE = "# ikigai-log v1"
 PREFIXES = (("harness", H), ("log", LOG))
 LOCK_WAIT = 0.5
+LOCK_AT = 1 << 40  # msvcrt's lock is mandatory: one byte far past the end, so readers never meet it
 TAIL_BYTES = 8192
 ENTRY = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) (\S+) (\S+)((?: [A-Za-z]+=\S+)*)$")
 
