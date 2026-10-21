@@ -55,7 +55,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import fcntl
 import json
 import os
 import plistlib
@@ -70,6 +69,11 @@ import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -649,7 +653,11 @@ class RepoLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a")
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if os.name == "nt":  # byte 0, not blocking: the same lock, by another name
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             handle.close()
             return False
@@ -658,7 +666,11 @@ class RepoLock:
 
     def release(self) -> None:
         if self.handle is not None:
-            fcntl.flock(self.handle, fcntl.LOCK_UN)
+            if os.name == "nt":
+                self.handle.seek(0)
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(self.handle, fcntl.LOCK_UN)
             self.handle.close()
             self.handle = None
 
