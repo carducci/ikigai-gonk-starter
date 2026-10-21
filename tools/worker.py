@@ -429,7 +429,9 @@ def work_root(text: str, home: Path, repo: Path | None = None) -> Path:
             f"work_root = {text!r} is relative; write it as ~/<dir>",
         )
     root = root.resolve()
-    if root == home or home not in root.parents:
+    # Windows paths differ in case without differing in place; normcase is the identity elsewhere
+    key, home_key = Path(os.path.normcase(root)), Path(os.path.normcase(home))
+    if key == home_key or home_key not in key.parents:
         raise gonk.refuse(
             "worker-work-root-in-home",
             repo,
