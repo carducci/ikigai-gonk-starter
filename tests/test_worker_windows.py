@@ -9,6 +9,10 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import signal
+import subprocess
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -69,3 +73,60 @@ class TheWorkRootIsCaseNormalised(unittest.TestCase):
     def test_without_the_fold_another_case_is_another_directory(self):
         with self.assertRaises(gonk.ConfigError):
             worker.work_root(str(self.home).swapcase() + "/work", self.home)
+
+
+def alive(pid: int) -> bool:
+    out = subprocess.run(
+        ["tasklist", "/NH", "/FI", f"PID eq {pid}"], capture_output=True, text=True
+    ).stdout
+    return str(pid) in out
+
+
+class TheLoop(unittest.TestCase):
+    def setUp(self):
+        self.ledger = FakeLedger()
+        self.rig = Rig(self)
+        quiet = contextlib.redirect_stdout(io.StringIO())
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
+
+    def test_the_stop_file_stops_an_idle_loop_within_a_poll(self):
+        self.rig.configure(poll='"1s"')
+        w = self.rig.worker(self.ledger)
+        codes = []
+        thread = threading.Thread(target=lambda: codes.append(w.loop()))
+        thread.start()
+        time.sleep(0.3)  # idle: nothing is ready, so it is waiting out the poll
+        w.wc.stop_file.parent.mkdir(parents=True, exist_ok=True)
+        w.wc.stop_file.write_text("")
+        thread.join(timeout=3)  # one poll is 1 s
+        self.assertFalse(thread.is_alive(), "the loop did not stop within a poll")
+        self.assertEqual(codes, [0])
+
+    @unittest.skipUnless(hasattr(signal, "SIGBREAK"), "Ctrl+Break is Windows only")
+    def test_ctrl_break_stops_the_loop_as_sigterm_does(self):
+        self.rig.configure()
+        registered = {}
+        with (
+            mock.patch.object(worker.signal, "signal", lambda s, h: registered.update({s: h})),
+            mock.patch.object(worker.Worker, "loop", lambda self: 0),
+        ):
+            code = worker.main(["--repo", str(self.rig.checkout), "run"], self.ledger, self.rig.home)
+        self.assertEqual(code, 0)
+        self.assertIn(signal.SIGBREAK, registered)
+        self.assertIs(registered[signal.SIGBREAK], registered[signal.SIGINT])
+
+    @unittest.skipUnless(os.name == "nt", "the process-tree kill is the Windows path")
+    def test_a_timed_out_agent_is_killed_with_its_child(self):
+        for flags in (["--child"], ["--child", "--stubborn"]):  # polite, then deaf to the break
+            with self.subTest(flags=flags):
+                self.rig.agent_flags = ["--sleep", "60", *flags]
+                n = self.ledger.file(f"Too big {flags}", ["worker:w1", "repo:lib"])
+                self.rig.configure(budget='"3s"', grace='"2s"')
+                started = time.monotonic()
+                outcome = self.rig.worker(self.ledger).run_once()
+                self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+                self.assertLess(time.monotonic() - started, 30)
+                agent, child = map(int, (self.rig.record / f"child-{n}").read_text().split())
+                self.assertFalse(alive(child), "the agent's child outlived the agent")
+                self.assertFalse(alive(agent), "the agent is still running")
