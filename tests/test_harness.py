@@ -244,6 +244,16 @@ class TheFiringLog(unittest.TestCase):
         self.assertIn("ValueError", err.getvalue())
         self.assertFalse((self.repo / harness.FIRINGS_FILE).exists())
 
+    def test_two_firings_in_one_process_are_both_recorded_with_lf_only(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            harness.fire("evidence-required", "refusal", self.repo)
+            harness.fire("evidence-required", "refusal", self.repo)
+        self.assertEqual(err.getvalue(), "")
+        raw = (self.repo / harness.FIRINGS_FILE).read_bytes()
+        self.assertNotIn(b"\r\n", raw)
+        self.assertEqual([f.seq for f in harness.read_firings(self.repo).firings], [1, 2])
+
     def test_concurrent_writers_keep_the_sequence_dense(self):
         threads = [
             threading.Thread(target=harness.fire, args=("evidence-required", "refusal", self.repo))

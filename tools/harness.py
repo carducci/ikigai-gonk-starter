@@ -206,7 +206,8 @@ def _fire(control: str, kind: str, repo: Path, fields: dict[str, str]) -> None:
         raise ValueError(f"not a control firing: {control!r} {kind!r}")
     path = Path(repo) / FIRINGS_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+    flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)  # no CRLF on Windows
+    fd = os.open(path, flags, 0o600)
     try:
         _lock(fd)
         size = os.fstat(fd).st_size
