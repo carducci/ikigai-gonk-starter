@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import os
 import re
@@ -177,6 +178,13 @@ def _lock(fd: int) -> None:
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"the firing log stayed locked for {LOCK_WAIT}s") from None
             time.sleep(0.005)
+
+
+def _unlock(fd: int) -> None:
+    if fcntl is None and msvcrt is not None:  # flock goes with the close; msvcrt wants its byte named
+        with contextlib.suppress(OSError):  # never locked: the wait timed out
+            os.lseek(fd, LOCK_AT, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
 def _next_seq(fd: int, size: int) -> int:
