@@ -10,9 +10,10 @@ import contextlib
 import io
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from support import scratch_repo
+from support import gonk, scratch_repo
 from worker_support import FakeLedger, Rig, worker
 
 
@@ -46,3 +47,25 @@ class TheElevationRefusal(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "the administrator token exists only on Windows")
     def test_the_real_token_check_answers_with_a_bool(self):
         self.assertIsInstance(worker.elevated(), bool)
+
+
+class TheWorkRootIsCaseNormalised(unittest.TestCase):
+    def setUp(self):
+        self.home = scratch_repo(self) / "Agent"
+        self.home.mkdir()
+
+    def test_a_work_root_in_other_case_is_still_under_home(self):
+        # Windows folds case in a path, POSIX does not: so POSIX is given the fold. Either way
+        # the comparison must go through os.path.normcase, which the spy shows.
+        fold = os.path.normcase if os.name == "nt" else str.lower
+        shouted = str(self.home).swapcase() + os.sep + "WORK" + os.sep + "x"
+        with mock.patch("os.path.normcase", mock.Mock(wraps=fold)) as spy:
+            self.assertEqual(worker.work_root(shouted, self.home), Path(shouted).resolve())
+            self.assertTrue(spy.called)
+            with self.assertRaises(gonk.ConfigError):
+                worker.work_root(str(self.home).swapcase(), self.home)
+
+    @unittest.skipIf(os.name == "nt", "Windows folds case, so there is no other-case root outside")
+    def test_without_the_fold_another_case_is_another_directory(self):
+        with self.assertRaises(gonk.ConfigError):
+            worker.work_root(str(self.home).swapcase() + "/work", self.home)
