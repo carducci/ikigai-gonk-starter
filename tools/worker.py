@@ -1080,7 +1080,18 @@ def agent_argv(command: list[str], values: dict[str, str]) -> list[str]:
 def stop_process(proc: subprocess.Popen, grace: int) -> None:
     """SIGTERM to the agent's whole process group, then SIGKILL after the grace period. The
     agent was started in a session of its own, so its children go with it, and the worker
-    (in another group) is not signaled."""
+    (in another group) is not signaled. On Windows it is Ctrl+Break to the agent's process group,
+    then `taskkill /T /F` on the tree, since no signal reaches a console child's children."""
+    if os.name == "nt":
+        try:
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+            proc.wait(timeout=grace)
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # no console to break into, or it ignored the break
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        proc.wait(timeout=30)
+        return
     for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 30)):
         try:
             os.killpg(proc.pid, sig)
@@ -1330,7 +1341,11 @@ class Worker:
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=subprocess.STDOUT,
-                    start_new_session=True,
+                    **(
+                        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                        if os.name == "nt"
+                        else {"start_new_session": True}
+                    ),
                 )
             except OSError as e:
                 raise StepFailed(f"the agent `{argv[0]}` did not start: {e}") from e
