@@ -1606,6 +1606,7 @@ def elevated() -> bool:
 
 def cmd_run(args, make_ikigai, home) -> int:
     if elevated():
+        who = "elevated (as an administrator)" if os.name == "nt" else "as root"
         try:
             repo = Path(args.repo).resolve() if args.repo else gonk.find_repo(Path.cwd())
         except gonk.ConfigError:
@@ -1613,8 +1614,7 @@ def cmd_run(args, make_ikigai, home) -> int:
         raise gonk.refuse(
             "worker-refuses-root",
             repo,
-            f"refusing to run {'elevated (as an administrator)' if os.name == 'nt' else 'as root'}: "
-            "a worker runs as an account of its own",
+            f"refusing to run {who}: a worker runs as an account of its own",
         )
     worker = build(args, make_ikigai, home)
     if args.once:
