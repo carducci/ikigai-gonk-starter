@@ -4,7 +4,8 @@ would, and does what its flags say: record its brief, sleep, edit a file, commit
 branch and "open a pull request" through the stub gh, or report evidence without one.
 
     fake_agent.py --record <dir> --gh "<argv of the stub gh>" --branch B --item N
-                  [--sleep S] [--child] [--stubborn] [--no-pr] [--evidence URL --report-file P] [--exit N] -- <prompt>
+                  [--sleep S] [--child] [--stubborn] [--no-pr] [--evidence URL --report-file P]
+                  [--exit N] -- <prompt>
 """
 
 from __future__ import annotations

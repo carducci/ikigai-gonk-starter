@@ -111,7 +111,9 @@ class TheLoop(unittest.TestCase):
             mock.patch.object(worker.signal, "signal", lambda s, h: registered.update({s: h})),
             mock.patch.object(worker.Worker, "loop", lambda self: 0),
         ):
-            code = worker.main(["--repo", str(self.rig.checkout), "run"], self.ledger, self.rig.home)
+            code = worker.main(
+                ["--repo", str(self.rig.checkout), "run"], self.ledger, self.rig.home
+            )
         self.assertEqual(code, 0)
         self.assertIn(signal.SIGBREAK, registered)
         self.assertIs(registered[signal.SIGBREAK], registered[signal.SIGINT])
