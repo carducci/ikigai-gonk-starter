@@ -1578,8 +1578,17 @@ def build(args, make_ikigai, home: Path | None) -> Worker:
     return Worker(cfg, wc, make_ikigai(cfg.target), home=home)
 
 
+def elevated() -> bool:
+    """Root, or on Windows an administrator's elevated token (the one thing tests fake)."""
+    if os.name == "nt":
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
 def cmd_run(args, make_ikigai, home) -> int:
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
+    if elevated():
         try:
             repo = Path(args.repo).resolve() if args.repo else gonk.find_repo(Path.cwd())
         except gonk.ConfigError:
@@ -1587,7 +1596,8 @@ def cmd_run(args, make_ikigai, home) -> int:
         raise gonk.refuse(
             "worker-refuses-root",
             repo,
-            "refusing to run as root: a worker runs as an account of its own",
+            f"refusing to run {'elevated (as an administrator)' if os.name == 'nt' else 'as root'}: "
+            "a worker runs as an account of its own",
         )
     worker = build(args, make_ikigai, home)
     if args.once:
