@@ -68,7 +68,7 @@ class TheWorkRootIsCaseNormalised(unittest.TestCase):
     def test_a_work_root_in_other_case_is_still_under_home(self):
         # Windows folds case in a path, POSIX does not: so POSIX is given the fold. Either way
         # the comparison must go through os.path.normcase, which the spy shows.
-        fold = os.path.normcase if os.name == "nt" else str.lower
+        fold = os.path.normcase if os.name == "nt" else (lambda p: os.fspath(p).lower())
         shouted = str(self.home).swapcase() + os.sep + "WORK" + os.sep + "x"
         with mock.patch("os.path.normcase", mock.Mock(wraps=fold)) as spy:
             self.assertEqual(worker.work_root(shouted, self.home), Path(shouted).resolve())
