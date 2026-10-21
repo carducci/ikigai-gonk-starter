@@ -162,12 +162,16 @@ def _write(fd: int, data: bytes) -> int:
 
 
 def _lock(fd: int) -> None:
-    if fcntl is None:
+    if fcntl is None and msvcrt is None:
         return
     deadline = time.monotonic() + LOCK_WAIT
     while True:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                os.lseek(fd, LOCK_AT, os.SEEK_SET)  # msvcrt locks from the current position
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return
         except OSError:
             if time.monotonic() >= deadline:
