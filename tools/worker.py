@@ -1629,6 +1629,8 @@ def cmd_run(args, make_ikigai, home) -> int:
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
+    if hasattr(signal, "SIGBREAK"):  # Windows: Ctrl+Break is the stop SIGTERM cannot be there
+        signal.signal(signal.SIGBREAK, on_signal)
     return worker.loop()
 
 
