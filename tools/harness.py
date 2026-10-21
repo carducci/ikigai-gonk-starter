@@ -236,6 +236,7 @@ def _fire(control: str, kind: str, repo: Path, fields: dict[str, str]) -> None:
         text += entry_line(control, kind, seq, when, fields) + "\n"
         _write(fd, text.encode("utf-8"))
     finally:
+        _unlock(fd)
         os.close(fd)
 
 
