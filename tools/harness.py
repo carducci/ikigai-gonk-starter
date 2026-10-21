@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import os
 import re
@@ -63,10 +64,14 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-try:  # POSIX; on a platform without it the log is written unlocked (docs/windows.md: use WSL2)
+try:  # POSIX flock; Windows has msvcrt.locking instead; with neither the log is written unlocked
     import fcntl
 except ImportError:  # pragma: no cover
     fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover
+    msvcrt = None
 
 H = "https://ikigai-rs.dev/ns/harness#"
 LOG = "https://ikigai-rs.dev/ns/log#"
@@ -94,6 +99,7 @@ KINDS = {"refusal": "harness:Refusal", "warning": "harness:Warning"}
 VERSION_LINE = "# ikigai-log v1"
 PREFIXES = (("harness", H), ("log", LOG))
 LOCK_WAIT = 0.5
+LOCK_AT = 1 << 40  # msvcrt's lock is mandatory: one byte far past the end, so readers never meet it
 TAIL_BYTES = 8192
 ENTRY = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) (\S+) (\S+)((?: [A-Za-z]+=\S+)*)$")
 
@@ -157,17 +163,28 @@ def _write(fd: int, data: bytes) -> int:
 
 
 def _lock(fd: int) -> None:
-    if fcntl is None:
+    if fcntl is None and msvcrt is None:
         return
     deadline = time.monotonic() + LOCK_WAIT
     while True:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                os.lseek(fd, LOCK_AT, os.SEEK_SET)  # msvcrt locks from the current position
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return
         except OSError:
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"the firing log stayed locked for {LOCK_WAIT}s") from None
             time.sleep(0.005)
+
+
+def _unlock(fd: int) -> None:
+    if fcntl is None and msvcrt is not None:  # flock goes with the close; msvcrt doesn't
+        with contextlib.suppress(OSError):  # never locked: the wait timed out
+            os.lseek(fd, LOCK_AT, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
 def _next_seq(fd: int, size: int) -> int:
@@ -219,6 +236,7 @@ def _fire(control: str, kind: str, repo: Path, fields: dict[str, str]) -> None:
         text += entry_line(control, kind, seq, when, fields) + "\n"
         _write(fd, text.encode("utf-8"))
     finally:
+        _unlock(fd)
         os.close(fd)
 
 
