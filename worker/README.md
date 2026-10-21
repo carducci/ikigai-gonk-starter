@@ -789,8 +789,8 @@ claim that is no longer its own.
 ## Windows (WSL2)
 
 A Windows machine is a worker through **WSL2**: a Linux distribution in a small VM, set up as
-on Linux above, plus what WSL changes. Native Windows is not supported as a whole (the `ikigai` client has
-no Windows build), though `tools/worker.py` itself now runs there on Python 3.11+: it takes the
+on Linux above, plus what WSL changes. Native Windows is not supported as a whole (`ikigai-cli` builds for Windows,
+but there is no released Windows build yet), though `tools/worker.py` itself now runs there on Python 3.11+: it takes the
 repository lock with `msvcrt`, starts the agent in its own process group and kills its tree
 (`taskkill /T`), stops on the stop file or Ctrl+Break, and refuses to run elevated. What WSL changes:
 
