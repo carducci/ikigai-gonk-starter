@@ -441,8 +441,7 @@ def sync_starter() -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     if not (PROFILES / "profiles.toml").is_file():
-        print("new.py runs only in ikigai-gonk-starter: no profiles/ here.", file=sys.stderr)
-        return 2
+        raise SystemExit("new.py: runs only in ikigai-gonk-starter; no profiles/ here")
     cat = catalog()
     p = argparse.ArgumentParser(prog="new.py", description=__doc__.splitlines()[0])
     p.add_argument("dir", nargs="?", help="where to write it: a new or empty directory")

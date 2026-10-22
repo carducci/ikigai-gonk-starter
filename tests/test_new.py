@@ -169,8 +169,8 @@ class Generate(unittest.TestCase):
         done = subprocess.run(
             [sys.executable, "tools/new.py", "--help"], cwd=repo, capture_output=True, text=True
         )
-        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
-        self.assertIn("runs only in ikigai-gonk-starter", done.stderr)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("new.py: runs only in ikigai-gonk-starter", done.stderr)
         self.assertNotIn("Traceback", done.stderr)
 
 
