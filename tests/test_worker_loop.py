@@ -598,6 +598,15 @@ class TheLoop(unittest.TestCase):
         self.assertIn("[...]", prompt)  # truncated
         self.assertNotIn(long_text, prompt)
 
+    def test_the_brief_carries_comments_in_the_order_they_were_written(self):
+        n = self.ledger.file("Re-run", ["worker:w1", "repo:lib"])
+        for i in range(3):
+            self.ledger.add_comment(n, f"note {i:02}")
+        self.run_once()
+        prompt = self.rig.prompt(n)
+        self.assertLess(prompt.index("note 00"), prompt.index("note 01"))
+        self.assertLess(prompt.index("note 01"), prompt.index("note 02"))
+
     def test_a_second_run_of_one_item_gets_a_fresh_directory(self):
         n = self.ledger.file("Again", ["worker:w1", "repo:lib"])
         self.assertEqual(self.run_once(keep="true").code, worker.HANDED_BACK)
