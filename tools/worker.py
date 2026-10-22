@@ -984,9 +984,8 @@ def brief_comments(item: dict, routers: list[str] | None = None) -> str:
     """
     routers = routers or []
     comments = sorted(item.get("comments") or [], key=lambda c: c.get("time") or "")
-    kept: list[tuple[bool, str]] = []
-    total, truncated = 0, False
-    for comment in reversed(comments):  # newest first, so the bound drops the oldest
+    entries: list[tuple[int, bool, dict, str]] = []
+    for at, comment in enumerate(comments):
         text = (comment.get("text") or "").strip()
         if not text or text.startswith(HAND_BACK_PREFIXES):
             continue
@@ -998,12 +997,20 @@ def brief_comments(item: dict, routers: list[str] | None = None) -> str:
             text = "\n".join(lines[:MAX_COMMENT_LINES]) + "\n[...]"
         if len(text) > MAX_COMMENT_TEXT:
             text = text[:MAX_COMMENT_TEXT] + "[...]"
-        if total + len(text) > MAX_BRIEF_COMMENTS or len(kept) >= MAX_COMMENTS_IN_BRIEF:
+        entries.append((at, trusted, comment, text))
+    chosen: list[tuple[int, bool, dict, str]] = []
+    total, truncated = 0, False
+    for entry in reversed(entries):  # newest first, so the bound drops the oldest
+        text = entry[3]
+        if total + len(text) > MAX_BRIEF_COMMENTS or len(chosen) >= MAX_COMMENTS_IN_BRIEF:
             truncated = True
             break
-        author = (comment.get("author") or "").strip() or "an author the ledger did not record"
-        kept.insert(0, (trusted, quoted(author, comment.get("time") or "no time", text)))
+        chosen.append(entry)
         total += len(text)
+    kept: list[tuple[bool, str]] = []
+    for _, trusted, comment, text in sorted(chosen, key=lambda entry: entry[0]):
+        author = (comment.get("author") or "").strip() or "an author the ledger did not record"
+        kept.append((trusted, quoted(author, comment.get("time") or "no time", text)))
     if not kept:
         return ""
     ours = [block for trusted, block in kept if trusted]
