@@ -988,12 +988,14 @@ def brief_comments(item: dict, routers: list[str] | None = None) -> str:
     routers = routers or []
     comments = sorted(item.get("comments") or [], key=lambda c: c.get("time") or "")
     entries: list[tuple[int, bool, dict, str]] = []
+    newest_dispatch = -1
     for at, comment in enumerate(comments):
         text = (comment.get("text") or "").strip()
         if not text or text.startswith(HAND_BACK_PREFIXES):
             continue
         trusted = by_router(comment, routers)
         if trusted and gonk.parse_dispatch(text) is not None:
+            newest_dispatch = at
             continue
         lines = text.splitlines()
         if len(lines) > MAX_COMMENT_LINES:
@@ -1003,7 +1005,9 @@ def brief_comments(item: dict, routers: list[str] | None = None) -> str:
         entries.append((at, trusted, comment, text))
     chosen: list[tuple[int, bool, dict, str]] = []
     total, truncated = 0, False
-    for entry in reversed(entries):  # newest first, so the bound drops the oldest
+    # The dispatcher's notes since its newest dispatch first, then the rest newest first.
+    first = sorted(entries, key=lambda e: (e[1] and e[0] > newest_dispatch, e[0]))
+    for entry in reversed(first):
         text = entry[3]
         if total + len(text) > MAX_BRIEF_COMMENTS or len(chosen) >= MAX_COMMENTS_IN_BRIEF:
             truncated = True
