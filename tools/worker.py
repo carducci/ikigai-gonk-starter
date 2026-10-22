@@ -986,7 +986,7 @@ def brief_comments(item: dict, routers: list[str] | None = None) -> str:
     comments = sorted(item.get("comments") or [], key=lambda c: c.get("time") or "")
     kept: list[tuple[bool, str]] = []
     total, truncated = 0, False
-    for comment in comments:
+    for comment in reversed(comments):  # newest first, so the bound drops the oldest
         text = (comment.get("text") or "").strip()
         if not text or text.startswith(HAND_BACK_PREFIXES):
             continue
@@ -1002,7 +1002,7 @@ def brief_comments(item: dict, routers: list[str] | None = None) -> str:
             truncated = True
             break
         author = (comment.get("author") or "").strip() or "an author the ledger did not record"
-        kept.append((trusted, quoted(author, comment.get("time") or "no time", text)))
+        kept.insert(0, (trusted, quoted(author, comment.get("time") or "no time", text)))
         total += len(text)
     if not kept:
         return ""
