@@ -607,6 +607,13 @@ class TheLoop(unittest.TestCase):
         self.assertLess(prompt.index("note 00"), prompt.index("note 01"))
         self.assertLess(prompt.index("note 01"), prompt.index("note 02"))
 
+    def test_the_brief_keeps_the_newest_comments_when_it_drops_some(self):
+        n = self.ledger.file("Re-run", ["worker:w1", "repo:lib"])
+        for i in range(25):
+            self.ledger.add_comment(n, f"note {i:02}")
+        self.run_once()
+        self.assertNotIn("note 00", self.rig.prompt(n))
+
     def test_a_second_run_of_one_item_gets_a_fresh_directory(self):
         n = self.ledger.file("Again", ["worker:w1", "repo:lib"])
         self.assertEqual(self.run_once(keep="true").code, worker.HANDED_BACK)
