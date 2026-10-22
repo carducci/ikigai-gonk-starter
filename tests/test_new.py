@@ -171,6 +171,7 @@ class Generate(unittest.TestCase):
         )
         self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
         self.assertIn("new.py: runs only in ikigai-gonk-starter", done.stderr)
+        self.assertIn("no profiles/profiles.toml here", done.stderr)
         self.assertNotIn("Traceback", done.stderr)
 
 
