@@ -613,6 +613,7 @@ class TheLoop(unittest.TestCase):
             self.ledger.add_comment(n, f"note {i:02}")
         self.run_once()
         self.assertNotIn("note 00", self.rig.prompt(n))
+        self.assertIn("[... earlier comments truncated ...]", self.rig.prompt(n))
 
     def test_a_second_run_of_one_item_gets_a_fresh_directory(self):
         n = self.ledger.file("Again", ["worker:w1", "repo:lib"])

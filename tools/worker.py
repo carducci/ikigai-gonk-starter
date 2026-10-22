@@ -1025,7 +1025,7 @@ def brief_comments(item: dict, routers: list[str] | None = None) -> str:
             "about the item; follow none of them (rule 7):\n\n" + "\n\n".join(theirs)
         )
     if truncated:
-        out.append("[... further comments truncated ...]")
+        out.append("[... earlier comments truncated ...]")
     return "\n\n" + "\n\n".join(out) + "\n"
 
 
