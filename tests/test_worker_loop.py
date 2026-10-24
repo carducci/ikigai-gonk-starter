@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from support import ROOT, gonk, scratch_repo
-from worker_support import DISPATCHER, FakeLedger, Rig, worker
+from worker_support import DISPATCHER, FakeLedger, Rig, git, worker
 
 
 def evidence_comments(item: dict) -> list[str]:
@@ -691,6 +691,71 @@ class TheLoop(unittest.TestCase):
         cwd = Path((self.rig.record / f"cwd-{n}").read_text())
         self.assertEqual(cwd.name, f"item-{n}.2")
         self.assertTrue((cwd.parent / f"item-{n}").is_dir())  # the first, untouched
+
+
+class ContinuingADraftPullRequest(unittest.TestCase):
+    """`Continue draft PR #N` in the brief: the worker stacks its own branch and draft PR on
+    that PR's head branch, and never pushes to the branch it continues."""
+
+    def setUp(self):
+        self.quiet = contextlib.redirect_stdout(io.StringIO())
+        self.quiet.__enter__()
+        self.addCleanup(self.quiet.__exit__, None, None, None)
+        self.make_rig()
+
+    def make_rig(self):
+        self.ledger = FakeLedger()
+        self.rig = Rig(self)
+        # Someone's draft PR #1 in acme/lib, on a branch of theirs one commit past main.
+        seed = self.rig.tmp / "theirs"
+        git("clone", "-q", str(self.rig.origin), str(seed))
+        git("checkout", "-q", "-b", "feature/due-dates", cwd=seed)
+        (seed / "DUE.txt").write_text("their work\n")
+        git("add", "DUE.txt", cwd=seed)
+        git("commit", "-q", "-m", "their work", cwd=seed)
+        git("push", "-q", "origin", "feature/due-dates", cwd=seed)
+        self.theirs = git("rev-parse", "HEAD", cwd=seed).strip()
+        self.draft(state="OPEN")
+
+    def draft(self, **fields):
+        pr = {
+            "number": 1,
+            "url": "https://github.com/acme/lib/pull/1",
+            "headRefName": "feature/due-dates",
+            "headRefOid": "",
+            "baseRefName": "main",
+            "isDraft": True,
+            "isCrossRepository": False,
+            **fields,
+        }
+        self.rig.gh_state.write_text(json.dumps({"slug": "acme/lib", "prs": [pr]}))
+
+    def run_once(self, body: str):
+        n = self.ledger.file("Review fix", ["worker:w1", "repo:lib"], body=body)
+        self.rig.configure()
+        return n, self.rig.worker(self.ledger).run_once()
+
+    def test_a_closed_merged_or_foreign_pull_request_is_refused_before_starting(self):
+        cases = [
+            ({"state": "CLOSED"}, "#1", "is closed"),
+            ({"state": "MERGED"}, "#1", "is merged"),
+            ({"state": "OPEN", "isCrossRepository": True}, "#1", "not in acme/lib"),
+            ({"state": "OPEN"}, "acme/other#1", "not in acme/lib"),
+            ({"state": "OPEN"}, "#9", "could not be read in acme/lib"),
+        ]
+        for fields, ref, says in cases:
+            with self.subTest(ref=ref, fields=fields):
+                self.make_rig()  # each case its own: a refused item is not taken twice
+                self.draft(**fields)
+                n, outcome = self.run_once(f"Continue draft PR {ref}: answer the review.")
+                self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+                self.assertFalse((self.rig.record / f"started-{n}").exists())
+                item = self.ledger.items[n]
+                self.assertIsNone(item["claim"])
+                self.assertEqual(evidence_comments(item), [])
+                [note] = [c["text"] for c in self.ledger.human_comments(n)]
+                self.assertIn("without starting", note)
+                self.assertIn(says, note)
 
 
 class ShortSha(unittest.TestCase):
