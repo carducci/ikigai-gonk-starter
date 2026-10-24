@@ -526,6 +526,51 @@ class TheLoop(unittest.TestCase):
         self.assertIn("No pull request", comment)
         self.assertIn("It does not reproduce", comment)
 
+    def test_a_pull_request_carries_the_agents_report_too(self):
+        # fixme-intake's triage opens a PR AND ends its report with a verdict, read from the
+        # hand-back (carducci#173): a PR must not drop the report.
+        self.rig.agent_flags = ["--report", "Triaged.\n\n\nVerdict: discuss\n"]
+        n = self.ledger.file("Triage", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/1\n"))
+        self.assertIn("CI green", comment)
+        self.assertIn("The agent's report:\nTriaged.\nVerdict: discuss\n", comment)
+
+    def test_a_long_report_with_a_pull_request_keeps_its_last_line_the_verdict(self):
+        # fixme-intake design D4 puts the verdict last, and route.py reads it from here
+        report = "".join(f"Finding {i}.\n" for i in range(1, 60)) + "Verdict: schedule\n"
+        self.rig.agent_flags = ["--report", report]
+        n = self.ledger.file("Long triage", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertIn("Finding 59.\nVerdict: schedule\n", comment)
+
+    def test_a_pull_request_with_no_report_hands_back_its_pr_lines_alone(self):
+        self.rig.agent_flags = ["--say", "Done: see the PR."]
+        n = self.ledger.file("No report", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertIn("CI green", comment)
+        self.assertNotIn("The agent's report", comment)
+        self.assertNotIn("Done: see the PR.", comment)  # stdout is the log's, not the item's
+
+    def test_a_report_that_is_not_utf8_still_hands_back_the_pull_request(self):
+        # an unreadable report must not cost a green PR its evidence (carducci#251)
+        self.rig.agent_flags = ["--report-hex", b"Verdict: discuss\n\xff\xfe\n".hex()]
+        n = self.ledger.file("Bad bytes", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/1\n"))
+        self.assertIn("The agent's report:\nVerdict: discuss\n", comment)
+
+    def test_a_report_path_that_is_a_directory_reads_as_no_report(self):
+        self.rig.configure()
+        here = self.rig.tmp
+        ws = worker.Workspace(here, here, "b", here / "log", here / "prompt", here / "report")
+        ws.report.mkdir()
+        self.assertEqual(self.rig.worker(self.ledger).report_lines(ws), [])
+
     def test_checks_are_read_directly_when_the_token_may(self):
         state = self.rig.gh()
         state["checks"] = "ok"
