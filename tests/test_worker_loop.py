@@ -537,6 +537,14 @@ class TheLoop(unittest.TestCase):
         self.assertIn("CI green", comment)
         self.assertIn("The agent's report:\nTriaged.\nVerdict: discuss\n", comment)
 
+    def test_the_log_holds_both_the_agents_stdout_and_its_stderr(self):
+        self.rig.agent_flags = ["--chatter", "working on it", "--say", "Done: see the PR."]
+        n = self.ledger.file("Logged", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        log = (self.rig.home / "work" / "lib" / f"item-{n}.log").read_text()
+        self.assertIn("working on it\n", log)
+        self.assertIn("Done: see the PR.\n", log)
+
     def test_checks_are_read_directly_when_the_token_may(self):
         state = self.rig.gh()
         state["checks"] = "ok"
