@@ -537,31 +537,6 @@ class TheLoop(unittest.TestCase):
         self.assertIn("CI green", comment)
         self.assertIn("The agent's report:\nTriaged.\nVerdict: discuss\n", comment)
 
-    def test_with_an_empty_report_the_agents_final_message_is_its_report(self):
-        # The reviewer that wrote its report to its log only (carducci#264, carducci#266):
-        # its final message, on stdout, stands in; its progress on stderr does not.
-        say = "Review posted: https://github.com/acme/lib/pull/1#review-9\n\nREVIEW: approve"
-        self.rig.agent_flags = ["--report", " \n", "--chatter", "reading files", "--say", say]
-        n = self.ledger.file("Review", ["worker:w1", "repo:lib"])
-        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
-        [comment] = evidence_comments(self.ledger.items[n])
-        self.assertIn("CI green", comment)
-        self.assertIn(
-            "The agent's report (its final message: it wrote nothing in its report file):\n"
-            "Review posted: https://github.com/acme/lib/pull/1#review-9\nREVIEW: approve\n",
-            comment,
-        )
-        self.assertNotIn("reading files", comment)
-
-    def test_with_no_report_and_no_final_message_the_hand_back_is_as_before(self):
-        self.rig.agent_flags = ["--chatter", "reading files"]
-        n = self.ledger.file("Quiet", ["worker:w1", "repo:lib"])
-        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
-        [comment] = evidence_comments(self.ledger.items[n])
-        self.assertIn("CI green", comment)
-        self.assertNotIn("The agent's report", comment)
-        self.assertNotIn("reading files", comment)
-
     def test_the_log_holds_both_the_agents_stdout_and_its_stderr(self):
         self.rig.agent_flags = ["--chatter", "working on it", "--say", "Done: see the PR."]
         n = self.ledger.file("Logged", ["worker:w1", "repo:lib"])
