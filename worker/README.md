@@ -787,7 +787,12 @@ the Pop!_OS 24.04 worker, `run --once`) showed, and what is still to try:
    the argument it does not know and writes the comment, the `Evidence:` prefix being the
    hand-back there. With no pull request, the first line of the agent's report file (a URL) is
    the evidence; with neither, the item goes back with a note and no evidence. An overrun goes
-   back the same way, naming the overrun.
+   back the same way, naming the overrun. With a pull request, the comment also carries the
+   report file's non-blank lines under "The agent's report:" (a triage's `Verdict:`, a
+   `Question for …:`), or, when that file is empty or missing, the agent's final message:
+   what it printed on stdout, which `claude -p` and `codex exec` keep for the final message
+   (their progress goes to stderr). Either is capped at 40 lines, as the report is with no
+   pull request. The log holds both streams.
 
 `run --once` exits 0 when it handed an item back with evidence, 3 when there was nothing to
 take, 4 when it took one and could not hand it back with evidence (lost, overrun, stopped,
