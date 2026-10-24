@@ -546,6 +546,15 @@ class TheLoop(unittest.TestCase):
         [comment] = evidence_comments(self.ledger.items[n])
         self.assertIn("Finding 59.\nVerdict: schedule\n", comment)
 
+    def test_a_pull_request_with_no_report_hands_back_its_pr_lines_alone(self):
+        self.rig.agent_flags = ["--say", "Done: see the PR."]
+        n = self.ledger.file("No report", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertIn("CI green", comment)
+        self.assertNotIn("The agent's report", comment)
+        self.assertNotIn("Done: see the PR.", comment)  # stdout is the log's, not the item's
+
     def test_checks_are_read_directly_when_the_token_may(self):
         state = self.rig.gh()
         state["checks"] = "ok"
