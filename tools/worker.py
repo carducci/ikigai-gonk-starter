@@ -1457,6 +1457,9 @@ class Worker:
             body += ["", *lines]
             if report := self.report_lines(ws)[:40]:
                 body += ["", "The agent's report:", *report]
+            elif final := said.lines()[:40]:
+                why = "its final message: it wrote nothing in its report file"
+                body += ["", f"The agent's report ({why}):", *final]
         else:
             body += ["", "No pull request: the agent reported the evidence above instead."]
             body += self.report_lines(ws)[1:41]
