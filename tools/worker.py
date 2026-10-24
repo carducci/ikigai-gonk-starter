@@ -28,7 +28,9 @@ What it does with one item, in order:
    finds the item held by someone else, released, or closed, or that the ledger refuses, means
    the claim is lost: the agent is stopped and the loss is reported, and nothing is released.
 3. A fresh worktree branched from `origin/<base>` under the work root (default `~/work`, which
-   must be under this account's own home), `<work root>/<repo>/item-<N>`.
+   must be under this account's own home), `<work root>/<repo>/item-<N>`. When the brief says
+   `Continue draft PR #N` (`continued_pr`), it is branched from that open PR's head instead,
+   and the agent opens a draft against that branch: a stacked PR, the evidence as any other.
 4. The agent, from the configured command template, with the item as its brief behind a fixed
    preamble; stopped when the wall-clock budget runs out. The title and body are the task (the
    dispatch pinned them); the comments follow as quoted blocks, each under its author, and
