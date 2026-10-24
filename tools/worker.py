@@ -591,6 +591,41 @@ def dispatch_problem(item: dict, routers: list[str], labels: list[str]) -> str |
     return None
 
 
+CONTINUE_PR = re.compile(r"\bContinue draft PR (?:([A-Za-z0-9-]+/[A-Za-z0-9._-]+))?#(\d+)\b")
+
+
+def continued_pr(item: dict, routers: list[str]) -> tuple[str | None, int] | None:
+    """(owner/name or None, number) of the pull request the brief says to continue with
+    `Continue draft PR #N` (or `owner/name#N`), or None. Read from what the brief trusts: the
+    title and body, then the routers' comments (their dispatches and notes), oldest first, the
+    newest naming one winning. A comment by anyone else is data, and never stacks the work."""
+    texts = [item.get("title") or "", item.get("body") or ""]
+    for c in sorted(item.get("comments") or [], key=lambda c: c.get("time") or ""):
+        text = c.get("text") or ""
+        if by_router(c, routers) and not text.startswith(HAND_BACK_PREFIXES):
+            texts.append(text)
+    found = None
+    for text in texts:
+        for m in CONTINUE_PR.finditer(text):
+            found = (m.group(1), int(m.group(2)))
+    return found
+
+
+def stack_problem(pr: dict | None, err: str | None, slug: str, named: str | None) -> str | None:
+    """Why the worker may not stack on this pull request, or None when it may: it must be open,
+    and in the item's own repository with its head branch there too."""
+    if named and named.lower() != slug.lower():
+        return f"it is {named}'s, not in {slug}, the item's repository"
+    if pr is None:
+        return f"it could not be read in {slug}: {err}"
+    if pr.get("isCrossRepository"):
+        return f"its branch is in a fork, not in {slug}, the item's repository"
+    state = (pr.get("state") or "").lower()
+    if state != "open":
+        return f"it is {state}, so there is nothing to continue"
+    return None
+
+
 def redispatched_since(item: dict, routers: list[str], at: str | None) -> bool:
     """Whether a router dispatched the item after the instant `at` (a hand-back)."""
     try:
