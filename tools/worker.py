@@ -962,7 +962,7 @@ its rules hold beside these.
 3. Work only in this directory, {workdir}, on the branch {branch}, made for you from
    origin/{base}. Never read or write any other checkout.
 4. Every change through a pull request with green CI: commit, push this branch
-   (`git push -u origin {branch}`), open ONE pull request against {base} with `gh pr create`,
+   (`git push -u origin {branch}`), open ONE pull request against {base} with {pr_create},
    and see its CI to green, fixing what fails. NEVER merge it, never enable auto-merge, and
    never close the item: the dispatcher does both after checking your evidence.
 5. The pull request is your evidence. Say in its description what you reproduced, what you
@@ -1079,13 +1079,24 @@ def brief(
     repo: Repo,
     budget: int,
     routers: list[str] | None = None,
+    stacked_on: dict | None = None,
 ) -> str:
+    """The preamble, then the item. `stacked_on` is the pull request it continues: the branch
+    was cut from that PR's head, and the agent opens a draft against it."""
+    base, pr_create = repo.base, "`gh pr create`"
+    if stacked_on:
+        base = stacked_on["headRefName"]
+        pr_create = (
+            f"`gh pr create --draft --base {base}` (a stacked draft: this item continues draft "
+            f"PR {stacked_on['url']}, whose branch {base} is not yours to push to)"
+        )
     values = {
         "{display}": str(item.get("display") or f"#{item.get('number')}"),
         "{report_file}": str(ws.report),
         "{workdir}": str(ws.path),
         "{branch}": ws.branch,
-        "{base}": repo.base,
+        "{pr_create}": pr_create,
+        "{base}": base,
         "{budget}": spoken(budget),
         "{ledger}": ledger,
     }
