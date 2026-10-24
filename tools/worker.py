@@ -130,7 +130,7 @@ TOKENS = (
     "{branch}",  # the branch the worktree is on
     "{item}",  # the item's number
     "{repo}",  # the repository's name, as in its `repo:` label
-    "{report_file}",  # its evidence with no pull request; with one, its report on the item too
+    "{report_file}",  # where the agent writes evidence when it opens no pull request
     "{profile}",  # [agent] profile, for an agent with profiles (hermes)
 )
 
