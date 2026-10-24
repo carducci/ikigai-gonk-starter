@@ -555,6 +555,22 @@ class TheLoop(unittest.TestCase):
         self.assertNotIn("The agent's report", comment)
         self.assertNotIn("Done: see the PR.", comment)  # stdout is the log's, not the item's
 
+    def test_a_report_that_is_not_utf8_still_hands_back_the_pull_request(self):
+        # an unreadable report must not cost a green PR its evidence (carducci#251)
+        self.rig.agent_flags = ["--report-hex", b"Verdict: discuss\n\xff\xfe\n".hex()]
+        n = self.ledger.file("Bad bytes", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/1\n"))
+        self.assertIn("The agent's report:\nVerdict: discuss\n", comment)
+
+    def test_a_report_path_that_is_a_directory_reads_as_no_report(self):
+        self.rig.configure()
+        here = self.rig.tmp
+        ws = worker.Workspace(here, here, "b", here / "log", here / "prompt", here / "report")
+        ws.report.mkdir()
+        self.assertEqual(self.rig.worker(self.ledger).report_lines(ws), [])
+
     def test_checks_are_read_directly_when_the_token_may(self):
         state = self.rig.gh()
         state["checks"] = "ok"
