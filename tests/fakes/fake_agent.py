@@ -4,7 +4,8 @@ would, and does what its flags say: record its brief, sleep, edit a file, commit
 branch and "open a pull request" through the stub gh, or report evidence without one.
 
     fake_agent.py --record <dir> --gh "<argv of the stub gh>" --branch B --item N
-                  [--sleep S] [--no-pr] [--evidence URL --report-file P] [--exit N] -- <prompt>
+                  [--sleep S] [--no-pr] [--evidence URL --report-file P] [--report TEXT]
+                  [--say TEXT] [--chatter TEXT] [--exit N] -- <prompt>
 """
 
 from __future__ import annotations
@@ -35,6 +36,9 @@ def main() -> int:
     p.add_argument("--no-pr", action="store_true")
     p.add_argument("--evidence")
     p.add_argument("--report-file")
+    p.add_argument("--report", help="text for the report file, whether or not it opens a PR")
+    p.add_argument("--say", help="its final message, on stdout, as `claude -p` prints one")
+    p.add_argument("--chatter", help="progress on stderr, as `codex exec` writes it")
     p.add_argument("--exit", type=int, default=0)
     p.add_argument("prompt")
     args = p.parse_args()
@@ -46,8 +50,12 @@ def main() -> int:
     (record / f"started-{args.item}").write_text(str(time.time()))
     time.sleep(args.sleep)
 
+    if args.chatter:
+        print(args.chatter, file=sys.stderr, flush=True)
     if args.evidence:
         Path(args.report_file).write_text(f"{args.evidence}\nIt does not reproduce: see the run.\n")
+    if args.report is not None:
+        Path(args.report_file).write_text(args.report)
     if not args.no_pr:
         Path("WORKED.txt").write_text(f"item {args.item}\n")
         git("add", "WORKED.txt")
@@ -59,6 +67,8 @@ def main() -> int:
             check=True,
             capture_output=True,
         )
+    if args.say:
+        print(args.say)
     (record / f"finished-{args.item}").write_text(str(time.time()))
     return args.exit
 
