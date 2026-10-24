@@ -759,6 +759,17 @@ class ContinuingADraftPullRequest(unittest.TestCase):
         self.assertIn("`gh pr create --draft --base feature/due-dates`", prompt)
         self.assertIn("https://github.com/acme/lib/pull/1", prompt)
 
+    def test_the_stacked_pull_request_is_the_evidence(self):
+        self.rig.agent_flags = ["--draft-base", "feature/due-dates"]
+        n, outcome = self.run_once("Continue draft PR #1: answer the review.")
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/2\n"))
+        self.assertIn("stacked on draft PR https://github.com/acme/lib/pull/1", comment)
+        [stacked] = [pr for pr in self.rig.gh()["prs"] if pr["number"] == 2]
+        self.assertEqual(stacked["baseRefName"], "feature/due-dates")
+        self.assertTrue(stacked["isDraft"])
+
     def test_without_the_words_nothing_changes(self):
         # Not in the brief, only in a comment by someone who is not a router: data, ignored.
         n = self.ledger.file("Plain", ["worker:w1", "repo:lib"], body="Fix the due dates.")
