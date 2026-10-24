@@ -526,6 +526,17 @@ class TheLoop(unittest.TestCase):
         self.assertIn("No pull request", comment)
         self.assertIn("It does not reproduce", comment)
 
+    def test_a_pull_request_carries_the_agents_report_too(self):
+        # fixme-intake's triage opens a PR AND ends its report with a verdict, read from the
+        # hand-back (carducci#173): a PR must not drop the report.
+        self.rig.agent_flags = ["--report", "Triaged.\n\n\nVerdict: discuss\n"]
+        n = self.ledger.file("Triage", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/1\n"))
+        self.assertIn("CI green", comment)
+        self.assertIn("The agent's report:\nTriaged.\nVerdict: discuss\n", comment)
+
     def test_checks_are_read_directly_when_the_token_may(self):
         state = self.rig.gh()
         state["checks"] = "ok"
