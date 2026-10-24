@@ -1419,7 +1419,7 @@ class Worker:
         ]
         if prs:
             body += ["", *lines]
-            if report := self.report_lines(ws)[:40]:
+            if report := self.report_lines(ws)[-40:]:  # the last: a `Verdict:` ends it
                 body += ["", "The agent's report:", *report]
         else:
             body += ["", "No pull request: the agent reported the evidence above instead."]
