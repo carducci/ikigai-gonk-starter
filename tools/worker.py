@@ -1487,8 +1487,8 @@ class Worker:
     def report_lines(self, ws: Workspace) -> list[str]:
         """The report file's non-blank lines; none when the agent wrote no report file."""
         try:
-            text = ws.report.read_text(encoding="utf-8")
-        except FileNotFoundError:
+            text = ws.report.read_text(encoding="utf-8", errors="replace")
+        except OSError:
             return []
         return [line for line in text.strip().splitlines() if line.strip()]
 
