@@ -1093,6 +1093,40 @@ def stop_process(proc: subprocess.Popen, grace: int) -> None:
             continue
 
 
+class Said:
+    """The agent's stdout, copied into its log as it comes, and its first KEEP bytes kept.
+
+    `claude -p` and `codex exec` print the agent's final message on stdout and their progress
+    on stderr, which goes to the log directly: so what is kept here is that final message.
+    The copy writes through a descriptor of its own, so it never writes to one the log's
+    closing has freed for reuse, even when a child the agent left behind holds stdout open.
+    """
+
+    KEEP = 64 * 1024
+
+    def __init__(self, pipe, log_fd: int):
+        self.kept = bytearray()
+        self.thread = threading.Thread(target=self.copy, args=(pipe, os.dup(log_fd)), daemon=True)
+        self.thread.start()
+
+    def copy(self, pipe, fd: int) -> None:
+        try:
+            while chunk := pipe.read1(65536):
+                view = memoryview(chunk)
+                while view:
+                    view = view[os.write(fd, view) :]
+                self.kept += chunk[: max(0, self.KEEP - len(self.kept))]
+        finally:
+            os.close(fd)
+            pipe.close()
+
+    def lines(self, wait: float = 5.0) -> list[str]:
+        """Its non-blank lines, waiting up to `wait` seconds for the stream to end."""
+        self.thread.join(wait)
+        text = bytes(self.kept).decode("utf-8", "replace")
+        return [line for line in text.strip().splitlines() if line.strip()]
+
+
 # --------------------------------------------------------------------------- the worker
 
 # Exit codes of `run --once`, and the outcome of one item.
@@ -1328,13 +1362,15 @@ class Worker:
                     argv,
                     cwd=ws.path,
                     stdin=subprocess.DEVNULL,
-                    stdout=out,
-                    stderr=subprocess.STDOUT,
+                    stdout=subprocess.PIPE,
+                    stderr=out,
                     start_new_session=True,
                 )
             except OSError as e:
                 raise StepFailed(f"the agent `{argv[0]}` did not start: {e}") from e
+            said = Said(proc.stdout, out.fileno())
             ended, code = self.watch(proc, started, beat)
+            said.lines()  # the copy into the log done (or given up on) before it closes
         exited = datetime.now(UTC)
         took = spoken(time.monotonic() - started)
         where = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
