@@ -1421,8 +1421,7 @@ class Worker:
             body += ["", *lines]
         else:
             body += ["", "No pull request: the agent reported the evidence above instead."]
-            report = ws.report.read_text(encoding="utf-8").strip().splitlines()[1:]
-            body += [line for line in report if line.strip()][:40]
+            body += self.report_lines(ws)[1:41]
         body += [
             "",
             f"Branch {ws.branch}; "
@@ -1480,6 +1479,14 @@ class Worker:
             return None
         url = first[0].strip() if first else ""
         return url if gonk.EVIDENCE_SHAPE.match(url) else None
+
+    def report_lines(self, ws: Workspace) -> list[str]:
+        """The report file's non-blank lines; none when the agent wrote no report file."""
+        try:
+            text = ws.report.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        return [line for line in text.strip().splitlines() if line.strip()]
 
     def hand_back(self, number: int, text: str) -> gonk.Answer:
         """Post the hand-back comment, marked with `handback=true`.
