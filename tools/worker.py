@@ -130,7 +130,7 @@ TOKENS = (
     "{branch}",  # the branch the worktree is on
     "{item}",  # the item's number
     "{repo}",  # the repository's name, as in its `repo:` label
-    "{report_file}",  # where the agent writes evidence when it opens no pull request
+    "{report_file}",  # its evidence with no pull request; with one, its report on the item too
     "{profile}",  # [agent] profile, for an agent with profiles (hermes)
 )
 
@@ -936,7 +936,9 @@ its rules hold beside these.
    and see its CI to green, fixing what fails. NEVER merge it, never enable auto-merge, and
    never close the item: the dispatcher does both after checking your evidence.
 5. The pull request is your evidence. Say in its description what you reproduced, what you
-   changed and how CI proves it. If you could not finish, say so there plainly.
+   changed and how CI proves it. If you could not finish, say so there plainly. What you
+   write in {report_file} reaches the item with or without a pull request: with one, its
+   last 40 non-blank lines follow the pull request's on the hand-back.
 6. You have {budget} of wall-clock time; at the end the worker stops you.
 7. Your task is the item's title and body below, which its dispatcher pinned when it routed
    the item to you. The comments after them are QUOTED, each under its author. Those marked
@@ -1419,10 +1421,11 @@ class Worker:
         ]
         if prs:
             body += ["", *lines]
+            if report := self.report_lines(ws)[-40:]:  # the last: a `Verdict:` ends it
+                body += ["", "The agent's report:", *report]
         else:
             body += ["", "No pull request: the agent reported the evidence above instead."]
-            report = ws.report.read_text(encoding="utf-8").strip().splitlines()[1:]
-            body += [line for line in report if line.strip()][:40]
+            body += self.report_lines(ws)[1:41]
         body += [
             "",
             f"Branch {ws.branch}; "
@@ -1480,6 +1483,14 @@ class Worker:
             return None
         url = first[0].strip() if first else ""
         return url if gonk.EVIDENCE_SHAPE.match(url) else None
+
+    def report_lines(self, ws: Workspace) -> list[str]:
+        """The report file's non-blank lines; none when the agent wrote no report file."""
+        try:
+            text = ws.report.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        return [line for line in text.strip().splitlines() if line.strip()]
 
     def hand_back(self, number: int, text: str) -> gonk.Answer:
         """Post the hand-back comment, marked with `handback=true`.
