@@ -537,6 +537,15 @@ class TheLoop(unittest.TestCase):
         self.assertIn("CI green", comment)
         self.assertIn("The agent's report:\nTriaged.\nVerdict: discuss\n", comment)
 
+    def test_a_long_report_with_a_pull_request_keeps_its_last_line_the_verdict(self):
+        # fixme-intake design D4 puts the verdict last, and route.py reads it from here
+        report = "".join(f"Finding {i}.\n" for i in range(1, 60)) + "Verdict: schedule\n"
+        self.rig.agent_flags = ["--report", report]
+        n = self.ledger.file("Long triage", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertIn("Finding 59.\nVerdict: schedule\n", comment)
+
     def test_checks_are_read_directly_when_the_token_may(self):
         state = self.rig.gh()
         state["checks"] = "ok"
