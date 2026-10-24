@@ -159,7 +159,7 @@ class Generate(unittest.TestCase):
     def test_an_unknown_target_is_refused_naming_the_known_ones(self):
         with self.assertRaises(SystemExit) as refused:
             new.generate(scratch(self), "cobol")
-        self.assertIn("this starter has deno, python, rust", str(refused.exception))
+        self.assertIn("this starter has deno, go, python, rust", str(refused.exception))
 
 
 class GenerateRust(unittest.TestCase):
@@ -408,6 +408,126 @@ class GenerateDeno(unittest.TestCase):
             self.assertFalse((deno / rel).exists(), rel)
 
 
+class GenerateGo(unittest.TestCase):
+    """`--target go`: the same sample, the same vectors, in one Go module on the standard
+    library alone — no third-party module, no go.sum.
+
+    That the generated repository's tests PASS is checked by scripts/gates.sh (and so by CI),
+    which generates every target into a scratch directory and runs its suite. These tests
+    check what a generated Go repository carries, and that the target left the other
+    targets' output alone.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="gonk-new-"))
+        cls.repo = cls.tmp / "library"
+        cls.written = new.generate(cls.repo, "go")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_the_targets_files_are_there(self):
+        for rel in [
+            "go.mod",
+            "artifacts/service/serve.go",
+            "artifacts/service/lending/date.go",
+            "artifacts/service/lending/domain.go",
+            "artifacts/service/lending/http.go",
+            "artifacts/service/lending/vectors_test.go",
+            "artifacts/service/lending/http_test.go",
+            "artifacts/service/lending/common_test.go",
+            "artifacts/cli/library.go",
+            "artifacts/cli/client/client.go",
+            "artifacts/cli/client/client_test.go",
+            "scripts/test.py",
+            "README.md",
+            ".gitignore",
+        ]:
+            self.assertTrue((self.repo / rel).is_file(), rel)
+
+    def test_the_target_imports_nothing_outside_the_standard_library(self):
+        """Standard library only: go.mod requires nothing, and an import is either the
+        standard library (no dot in its first path element) or this module's own."""
+        mod = (self.repo / "go.mod").read_text()
+        self.assertNotIn("require", mod)
+        self.assertFalse((self.repo / "go.sum").exists())
+        for path in sorted((self.repo / "artifacts").rglob("*.go")):
+            text = path.read_text()
+            blocks = re.findall(r"^import \((.*?)^\)", text, re.S | re.M)
+            specifiers = re.findall(r'"([^"]+)"', "\n".join(blocks))
+            specifiers += re.findall(r'^import "([^"]+)"', text, re.M)
+            self.assertTrue(specifiers, path)
+            for specifier in specifiers:
+                first = specifier.split("/")[0]
+                self.assertTrue(
+                    "." not in first or specifier.startswith("library-lending/"),
+                    f"{path.name}: {specifier!r} is not the standard library or this module",
+                )
+
+    def test_the_vectors_the_target_runs_are_the_samples_own(self):
+        for rel in ["openspec/vectors.json", "tests/test_specs_and_vectors.py"]:
+            self.assertEqual(
+                (self.repo / rel).read_bytes(), (ROOT / "templates" / "library" / rel).read_bytes()
+            )
+        vectors = (self.repo / "artifacts/service/lending/vectors_test.go").read_text()
+        for wanted in [
+            "vectors.json",
+            "TestEveryScenarioAgainstTheRules",
+            "TestEveryScenarioOverHTTP",
+        ]:
+            self.assertIn(wanted, vectors, wanted)
+        cli = (self.repo / "artifacts/cli/client/client_test.go").read_text()
+        self.assertIn("lending.Serve(", cli)
+
+    def test_the_entry_point_fails_closed_without_go(self):
+        script = (self.repo / "scripts/test.py").read_text()
+        self.assertIn("shutil.which", script)
+        self.assertIn("NOTHING WAS TESTED", script)
+        self.assertIn("go test", script)
+
+    def test_the_gate_provisions_go_when_the_runner_has_none(self):
+        """Like Deno: the gate fetches the pinned release itself, checksum first, rather than
+        depending on a workflow setup step. A machine that has `go` keeps its own."""
+        gate = (ROOT / "scripts" / "gates.sh").read_text()
+        self.assertIn("command -v go ", gate)
+        self.assertIn("https://go.dev/dl/", gate)
+        digests = re.findall(r'echo "([0-9a-f]{64})"', gate)
+        self.assertEqual(len(digests), len(set(digests)))
+        self.assertGreaterEqual(
+            len(re.findall(r'"go\$GO_VERSION\.[a-z0-9-]+\.tar\.gz"\) echo', gate)), 4
+        )
+
+    def test_the_go_recipes_swap_the_starters_own(self):
+        text = (self.repo / "justfile").read_text()
+        names = [n for n, _ in new.recipe_blocks(text) if n]
+        for recipe in ["init", "seed", "next", "claim", "report", "close", "gates"]:
+            self.assertIn(recipe, names)
+        self.assertNotIn("new", names)
+        self.assertEqual(names.count("gates"), 1)
+        self.assertIn("go run ./artifacts/service", text)
+        self.assertNotIn("deno run", text)
+        self.assertNotIn("cargo run", text)
+
+    def test_the_target_did_not_change_the_other_targets_output(self):
+        go = scratch(self)
+        new.generate(go, "go")
+        for target, own in [
+            ("python", "artifacts/service/lending/domain.py"),
+            ("rust", "artifacts/service/src/domain.rs"),
+            ("deno", "artifacts/service/src/domain.ts"),
+        ]:
+            other = scratch(self)
+            new.generate(other, target)
+            for rel in ["openspec/vectors.json", "AGENTS.md", "tools/gonk.py"]:
+                self.assertEqual((other / rel).read_bytes(), (go / rel).read_bytes(), rel)
+            self.assertTrue((other / own).is_file(), own)
+            self.assertFalse((go / own).exists(), own)
+        self.assertFalse((go / "deno.json").exists())
+        self.assertFalse((go / "Cargo.toml").exists())
+
+
 # The rule every generated AGENTS.md carries (profiles/sections/accessibility.md).
 ACCESSIBILITY_RULE = "Read `ACCESSIBILITY.md` before any change to a user interface"
 
@@ -437,6 +557,100 @@ class Accessibility(unittest.TestCase):
         own = (ROOT / "ACCESSIBILITY.md").read_text(encoding="utf-8")
         self.assertIn("Evaluation in progress. No conformance claim.", own)
         self.assertNotEqual(own, (ROOT / "templates" / "library" / "ACCESSIBILITY.md").read_text())
+
+
+IKIGAI_STYLE_HEADING = "## Building in the ikigai style (optional)"
+IKIGAI_STYLE_INVITATION = "Neither is required"
+
+
+class ResourceFirst(unittest.TestCase):
+    """Every generated repository, whatever its process, carries the resource-first method
+    and an optional AGENTS.md pointer before `Spec first`."""
+
+    def test_every_process_carries_the_method_and_optional_pointer(self):
+        for process in [None, ["solo"], ["hub"], ["workers"], ["audits"]]:
+            repo = scratch(self)
+            new.generate(repo, "python", process)
+            label = ",".join(process or ["default"])
+            self.assertEqual(
+                (repo / "docs" / "resource-design.md").read_bytes(),
+                (ROOT / "docs" / "resource-design.md").read_bytes(),
+                label,
+            )
+            agents = (repo / "AGENTS.md").read_text()
+            self.assertIn(IKIGAI_STYLE_HEADING, agents, label)
+            self.assertIn(IKIGAI_STYLE_INVITATION, agents, label)
+            self.assertEqual(agents.count(IKIGAI_STYLE_HEADING), 1, label)
+            self.assertNotIn("## Design resource-first", agents, label)
+            self.assertNotIn("## Follow the UI conventions", agents, label)
+            self.assertIn("docs/resource-design.md", agents, label)
+            if "## Spec first" in agents:
+                self.assertLess(
+                    agents.index(IKIGAI_STYLE_HEADING), agents.index("## Spec first"), label
+                )
+            harness = (repo / ".gonk" / "harness" / "harness.ttl").read_text()
+            self.assertIn("guide:building-ikigai-style", harness, label)
+            self.assertNotIn("guide:design-resource-first", harness, label)
+            self.assertNotIn("guide:ui-conventions", harness, label)
+            self.assertIn("Neither is required", harness, label)
+
+    def test_the_method_names_its_steps_and_its_sources(self):
+        doc = (ROOT / "docs" / "resource-design.md").read_text(encoding="utf-8")
+        for step in ["Sets.", "Atoms.", "Compositions.", "Spaces:", "Views."]:
+            self.assertIn(f"**{step}", doc, step)
+        self.assertIn("names first, code last", doc)
+        self.assertIn("## Resource map", doc)
+        self.assertIn("Peter Rodgers", doc)
+        self.assertIn("Tony Butterfield", doc)
+        self.assertIn("https://ikigai-rs.github.io/ikigai-tutorial/", doc)
+
+    def test_the_change_folder_skeleton_offers_a_resource_map(self):
+        text = (ROOT / "openspec" / "changes" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("## Resource map", text)
+        self.assertIn("docs/resource-design.md", text)
+        self.assertIn("if you design resource-first", text)
+
+
+class UiConventions(unittest.TestCase):
+    """Every generated repository, whatever its process, carries the UI decision record and the
+    optional AGENTS.md pointer after the accessibility rule."""
+
+    def test_every_process_carries_the_record_and_optional_pointer(self):
+        for process in [None, ["solo"], ["hub"], ["workers"], ["audits"]]:
+            repo = scratch(self)
+            new.generate(repo, "python", process)
+            label = ",".join(process or ["default"])
+            self.assertEqual(
+                (repo / "docs" / "ui-conventions.md").read_bytes(),
+                (ROOT / "docs" / "ui-conventions.md").read_bytes(),
+                label,
+            )
+            agents = (repo / "AGENTS.md").read_text()
+            self.assertIn(IKIGAI_STYLE_HEADING, agents, label)
+            self.assertIn(IKIGAI_STYLE_INVITATION, agents, label)
+            self.assertEqual(agents.count(IKIGAI_STYLE_HEADING), 1, label)
+            self.assertNotIn("## Design resource-first", agents, label)
+            self.assertNotIn("## Follow the UI conventions", agents, label)
+            self.assertIn("`ACCESSIBILITY.md` stays the floor", agents, label)
+            self.assertIn("not built yet", agents, label)
+            self.assertLess(
+                agents.index("Read ACCESSIBILITY.md before changing what people see"),
+                agents.index(IKIGAI_STYLE_HEADING),
+                label,
+            )
+            harness = (repo / ".gonk" / "harness" / "harness.ttl").read_text()
+            self.assertIn("guide:building-ikigai-style", harness, label)
+            self.assertNotIn("guide:design-resource-first", harness, label)
+            self.assertNotIn("guide:ui-conventions", harness, label)
+            self.assertIn("Neither is required", harness, label)
+
+    def test_the_record_is_the_public_copy(self):
+        doc = (ROOT / "docs" / "ui-conventions.md").read_text(encoding="utf-8")
+        self.assertIn("**a view is a resource**", doc)
+        for n in range(1, 20):
+            self.assertIn(f"| D{n} |", doc, f"D{n}")
+        for private in ["localhost", "devtools", "git-personal", "ledger #"]:
+            self.assertNotIn(private, doc, private)
 
 
 if __name__ == "__main__":

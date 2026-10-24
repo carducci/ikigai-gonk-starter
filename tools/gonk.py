@@ -187,10 +187,14 @@ class Target:
 
     def mcp_command(self) -> str:
         """The command an MCP client is configured with: the ledger's own names, over
-        `--override`, so every `urn:iki:ledger:*` goes to gonk and nowhere else."""
+        `--override`, under the local `agent` grant described in README.md, so every
+        `urn:iki:ledger:*` goes to gonk and nowhere else."""
         if self.socket:
-            return f"ikigai mcp --override urn:iki:ledger:={self.socket}"
-        return f"ikigai mcp --override urn:iki:ledger:={self.quic} --cert-dir {self.cert_dir}"
+            return f"ikigai mcp --grant agent --override urn:iki:ledger:={self.socket}"
+        return (
+            f"ikigai mcp --grant agent --override urn:iki:ledger:={self.quic}"
+            f" --cert-dir {self.cert_dir}"
+        )
 
 
 @dataclass
@@ -868,6 +872,16 @@ def publish_rows(cfg: Config, ikigai: Ikigai, saved: list[Saved], row) -> None:
         name = s.published_name(cfg.ledger)
         command = f"sink {PREFIX}script:{name} language={s.language}"
         answer = ikigai.run(command, stdin=s.text_for(cfg.ledger))
+        if not answer.ok and "urn:cap:script:write" in answer.text():
+            # A worker grant has no script write: publishing is the dispatcher's, and the
+            # same refusal would come back for every file, so say it once and stop.
+            row(
+                "note",
+                "scripts",
+                f"this identity's grant has no script write, so the {len(saved)} saved here are "
+                "not published by it: the dispatcher publishes these",
+            )
+            return
         (published if answer.ok else failed).append((name, answer))
     if published:
         names = ", ".join(f"urn:script:{n}" for n, _ in published)
@@ -1193,6 +1207,9 @@ def cmd_init(args, cfg: Config, make_ikigai) -> int:
                 row("ok", "gonk", f"{cfg.target.describe()} answers")
                 if cfg.ledger in ledgers:
                     open_, total = ledgers[cfg.ledger]
+                    if cfg.enrollment:
+                        cfg.enrollment = []
+                        row("ok", "enrolled", "gonk reads this identity: nothing to enroll")
                     row("ok", "items", f"`{cfg.ledger}` holds {total} item(s), {open_} open")
                 elif cfg.ledger:
                     row(
@@ -1611,15 +1628,34 @@ def evidence_note(args, cfg: Config) -> str:
     return f"Evidence: {args.evidence}" + (f"\n\n{args.note.strip()}" if args.note else "")
 
 
-def comment_flag(ikigai: Ikigai, cfg: Config, number: int, note: str, flag: str) -> Answer:
-    """Post `note` with `flag=true`.
+def socket_author(cfg: Config) -> str:
+    """` author=<holder>` when this tree reaches gonk over the owner's socket, else nothing.
+
+    Over the socket the door names nobody, so a report or close is stored unattributed and a
+    reader cannot tell one working tree's hand-back from another's. The holder fills that gap
+    as a free-text author: a label for readers, not an identity, since anyone who can open
+    the socket can write any free text. Over QUIC the door stamps the machine's principal,
+    which is the identity, and a free-text author would only replace it with a weaker one,
+    so nothing is added there.
+    """
+    if cfg.holder and cfg.target and cfg.target.socket:
+        return f" author={cfg.holder}"
+    return ""
+
+
+def comment_flag(
+    ikigai: Ikigai, cfg: Config, number: int, note: str, flag: str, author: str = ""
+) -> Answer:
+    """Post `note` with `flag=true` (and `author`, as `socket_author` gives it).
 
     The flag is a hand-back's state (`handback`, `rejects`: ikigai-ledger 0.8.0, ledger item
     1199). A ledger older than that does not know the argument and ignores it — the comment is
     written either way — so the `Evidence:` prefix stays in the note for the ledgers (and the
     readers) that have no such state.
     """
-    return ikigai.run(f"sink {cfg.resource('comment')} item={number} {flag}=true", stdin=note)
+    return ikigai.run(
+        f"sink {cfg.resource('comment')} item={number} {flag}=true{author}", stdin=note
+    )
 
 
 def cmd_report(args, cfg: Config, make_ikigai) -> int:
@@ -1632,7 +1668,7 @@ def cmd_report(args, cfg: Config, make_ikigai) -> int:
     need(cfg, "ledger", "target")
     note = evidence_note(args, cfg)
     ikigai = make_ikigai(cfg.target)
-    answer = comment_flag(ikigai, cfg, args.item, note, "handback")
+    answer = comment_flag(ikigai, cfg, args.item, note, "handback", socket_author(cfg))
     code = show(answer)
     if not answer.ok:
         return code
@@ -1717,7 +1753,9 @@ def cmd_dispatch(args, cfg: Config, make_ikigai) -> int:
 def cmd_close(args, cfg: Config, make_ikigai) -> int:
     need(cfg, "ledger", "target")
     note = evidence_note(args, cfg)
-    command = f"sink {cfg.resource('close')} item={args.item} reason={args.reason}"
+    command = f"sink {cfg.resource('close')} item={args.item} reason={args.reason}" + socket_author(
+        cfg
+    )
     ikigai = make_ikigai(cfg.target)
     answer = ikigai.run(command, stdin=note)
     code = show(answer)

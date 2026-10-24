@@ -158,6 +158,35 @@ in `scripts/gates.sh` everywhere.
 
 ## Setting up a worker, in order
 
+**With an invitation, the machine enrolls itself** (ledger item 2009). The controller runs
+`onboard invite <name> --kind worker` (or `--kind task-member`, or both kinds for one machine)
+and hands you a pairing code, an invite id, the layer door's address, its server certificate and
+that certificate's fingerprint. Then, as `agent`, in the checkout of step 8:
+
+    python3 tools/worker.py onboard --door door.example.org:4434 --pin <door fingerprint> \
+        --server-cert door.crt --code <pairing code> --invite <id> --name <name> \
+        --agents claude,codex --gonk gonk.example.org:1062 \
+        --gonk-server-cert gonk.crt --gonk-pin <gonk fingerprint>
+
+It makes this machine's certificate here (`~/.ikigai/onboard/<name>`; the key never leaves),
+refuses a server certificate that does not hash to its pin, posts the enrollment request to the
+door's `enroll` layer with the code's proof, and polls the `grants` layer until the controller
+approves it (exponential backoff for up to `--max-wait`, default 24 h; `--once` looks once and
+exits 3 while not enrolled). On the entitlement it writes `.gonk/worker-<agent>.toml` per agent
+(init-agents' own code, with the entitlement's routers), `.gonk/local.toml` for gonk over QUIC,
+the layers client's cert set (`~/.ikigai/layers-client/<name>`) for a task layer, and the
+config-home `mount` line for the door in `~/.ikigai/onboard/<name>/config-home.toml` (copy it
+into config.toml yourself: every ikigai server on the machine inherits that file), then prints
+the lines that start the loops. It never replaces a file that differs without `--force`, and a
+rerun posts nothing it posted before. That replaces the hand steps in 6 and 8: making the
+identity, sending the certificate, the fingerprint read-back, and editing the configuration.
+
+**What still needs a person:** the OS and its accounts (1, 2), the GitHub token (3), keeping it
+awake (4), the model (5), the hub's `hubdiag` ssh stanza and the tunnel (7), the repositories
+each loop may work in (`tools/worker_repos.py`), the approval on the controller's side, and,
+until the doors reload their trust lists (ledger item 1825), a restart of the door and gonk
+after the approval. Steps 1 to 8 below are the whole procedure, by hand.
+
 ### 1. The OS
 
 **Linux (Pop!_OS / Ubuntu 24.04; any systemd distribution should do):**
@@ -225,6 +254,8 @@ organization's base permission, so use a **classic** token instead:
 3. Which repositories the worker can push to is decided by those grants, not by the token:
    `tools/worker_repos.py --check-push` says which are missing, and `repo-protect --grant-worker`
    grants them.
+
+`worker.py onboard` does not touch the token: it stays a person's step, typed by hand.
 
 Either way, then:
 
@@ -329,6 +360,9 @@ or a `--cap` names it (gonk's [fresh-machine runbook](https://github.com/ikigai-
 
 ### 6. ikigai and gonk, as `agent`
 
+With an invitation, `worker.py onboard` (above) makes the identity and enrolls it; installing
+`ikigai` (and gonk, where this machine runs one) is still this step's.
+
 Follow gonk's [`docs/fresh-machine.md`](https://github.com/ikigai-rs/ikigai-gonk/blob/main/docs/fresh-machine.md)
 as the agent account (`sudo -iu agent`; rustup installs into its home). ★ **`agent`'s Rust lives
 in `/home/agent/.cargo/bin`** (macOS: `/Users/agent/.cargo/bin`), and what finds it depends on how
@@ -368,6 +402,9 @@ account, that it does not yet say:
 
 ### 7. Reach it from the hub
 
+A person's step even with an invitation: `onboard` enrolls the machine's certificate with the
+doors, never an ssh key, so the hub's `hubdiag` stanza and the tunnel are set up by hand.
+
 On the hub, a `~/.ssh/config` stanza for the worker that logs in as `hubdiag` with the key whose
 public half you installed:
 
@@ -402,7 +439,12 @@ agent's home: it refuses a work root anywhere else, and refuses to run as root.
     python3 tools/worker.py run --once                            # one item, then exit
 
 `init` and the enrollment are the top-level README's "gonk on another machine"; the claims
-then carry this machine's identity and are stamped a machine's. That is one loop running one
+then carry this machine's identity and are stamped a machine's. The loop uses the regular
+`ikigai` client, not `ikigai mcp`. If you also configure an agent with the MCP command
+that `init` prints, first create the local `agent` grant using the
+[top-level README's MCP setup](../README.md#one-transport-and-mcp-for-agents), with
+its unattended worker scopes; the certificate enrollment alone does not create that
+client-side grant. That is one loop running one
 agent. A machine with several agents runs a loop per agent instead (next), from this same
 checkout; the configuration and everything after it below hold for each loop. ⚠ The ssh tunnel in step 7
 forwards **TCP**, which carries gonk's HTTP door. gonk's machine door is **QUIC, which is
@@ -745,7 +787,9 @@ the Pop!_OS 24.04 worker, `run --once`) showed, and what is still to try:
    the argument it does not know and writes the comment, the `Evidence:` prefix being the
    hand-back there. With no pull request, the first line of the agent's report file (a URL) is
    the evidence; with neither, the item goes back with a note and no evidence. An overrun goes
-   back the same way, naming the overrun.
+   back the same way, naming the overrun. With a pull request, the comment also carries the
+   report file's last 40 non-blank lines under "The agent's report:" (a triage's closing
+   `Verdict:`, a `Question for …:`); with no report file it carries the pull requests alone.
 
 `run --once` exits 0 when it handed an item back with evidence, 3 when there was nothing to
 take, 4 when it took one and could not hand it back with evidence (lost, overrun, stopped,

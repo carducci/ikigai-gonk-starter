@@ -78,11 +78,16 @@ class Targets(unittest.TestCase):
             quic.mount_args(), ["--mount", "urn:gk:=quic://box:1062", "--cert-dir", "/c"]
         )
 
-    def test_mcp_uses_the_ledgers_own_names(self):
+    def test_mcp_uses_the_ledgers_own_names_under_an_explicit_grant(self):
+        sock = gonk.Target(socket="/s/gonk.sock")
+        self.assertEqual(
+            sock.mcp_command(),
+            "ikigai mcp --grant agent --override urn:iki:ledger:=/s/gonk.sock",
+        )
         quic = gonk.Target(quic="quic://box:1062", cert_dir="/c")
         self.assertEqual(
             quic.mcp_command(),
-            "ikigai mcp --override urn:iki:ledger:=quic://box:1062 --cert-dir /c",
+            "ikigai mcp --grant agent --override urn:iki:ledger:=quic://box:1062 --cert-dir /c",
         )
 
     def test_a_transport_without_its_details_is_refused(self):
@@ -269,7 +274,7 @@ class Init(unittest.TestCase):
             out,
         )
         self.assertNotIn("stay files in this repository; nothing", out.split("absent   nl")[1])
-        self.assertIn("ikigai mcp --override urn:iki:ledger:=", out)
+        self.assertIn("ikigai mcp --grant agent --override urn:iki:ledger:=", out)
 
     def test_a_ledger_with_nothing_filed_is_a_note_not_a_failure(self):
         repo = scratch_repo(self)
@@ -305,6 +310,34 @@ class Init(unittest.TestCase):
         self.assertRegex(out, r"missing\s+server\s+no server.crt")
         self.assertEqual(code, 1)
         self.assertEqual(fake.target.mount_args()[1], "urn:gk:=quic://gonk-host:1062")
+
+    def test_a_worker_grant_reports_publishing_once_and_an_enrolled_machine_skips_enrollment(self):
+        repo = scratch_repo(self)
+        certs = repo / "certs"
+        certs.mkdir()
+        pem = "-----BEGIN CERTIFICATE-----\n" + base64.encodebytes(b"cert").decode()
+        (certs / "client.crt").write_text(pem + "-----END CERTIFICATE-----\n")
+        (certs / "server.crt").write_text("x")
+        (repo / ".gonk" / "queries").mkdir(parents=True, exist_ok=True)
+        for n in ("a", "b"):
+            (repo / ".gonk" / "queries" / f"{n}.rq").write_text("SELECT * WHERE {}\n")
+        args = ["init", "--ledger", "acme", "--holder", "w"]
+        args += ["--quic", "quic://h:1062", "--cert-dir", str(certs)]
+        refused = gonk.Answer(1, "", "denied: needs urn:cap:script:write:acme-a")
+        fake = FakeIkigai(
+            [
+                ("ledgers", ok("acme  1 open  1 total  urn:…\n")),
+                ("describe", ok("x")),
+                ("sink urn:gk:script:", refused),
+            ]
+        )
+        code, out, _ = run(repo, args, fake)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("failed", out)
+        self.assertEqual(out.count("the dispatcher publishes these"), 1, out)
+        self.assertEqual(sum(c.startswith("sink urn:gk:script:") for c, _ in fake.calls), 1)
+        self.assertNotIn("ikigai-gonk client add", out)
+        self.assertIn("nothing to enroll", out)
 
 
 class Claims(unittest.TestCase):
@@ -370,9 +403,10 @@ class Claims(unittest.TestCase):
             [
                 # `handback=true` makes the hand-back the item's state (ledger 0.8.0, ledger
                 # item 1199), so `next` stops offering the item; the Evidence: prefix stays
-                # for the ledgers that have no such state.
+                # for the ledgers that have no such state. Over the socket the holder is the
+                # comment's free-text author, since the door names nobody there.
                 (
-                    "sink urn:gk:iki:ledger:acme:comment item=12 handback=true",
+                    "sink urn:gk:iki:ledger:acme:comment item=12 handback=true author=agent-1",
                     f"Evidence: {url}\n\nok",
                 ),
                 ("delete urn:gk:iki:ledger:acme:claim item=12", ""),
@@ -394,7 +428,7 @@ class Claims(unittest.TestCase):
             fake.calls[1:],
             [
                 (
-                    "sink urn:gk:iki:ledger:acme:comment item=12 handback=true",
+                    "sink urn:gk:iki:ledger:acme:comment item=12 handback=true author=agent-1",
                     f"Evidence: {url}",
                 ),
                 ("delete urn:gk:iki:ledger:acme:claim item=12", ""),
@@ -463,10 +497,23 @@ class Claims(unittest.TestCase):
         self.assertEqual(
             [c for c, _ in fake.calls[1:]],
             [
-                "sink urn:gk:iki:ledger:acme:close item=12 reason=done",
+                "sink urn:gk:iki:ledger:acme:close item=12 reason=done author=agent-1",
                 "delete urn:gk:iki:ledger:acme:claim item=12",
             ],
         )
+
+    def test_the_holder_is_the_author_over_the_socket_and_never_over_quic(self):
+        # Over the owner's socket the door names nobody, so a hand-back would be stored
+        # unattributed; the holder labels it. Over QUIC the door stamps the machine's
+        # principal, and a free-text author would only replace that identity.
+        socket = gonk.Config(self.repo, "acme", gonk.Target(socket="/s.sock"), "agent-1", {})
+        quic = gonk.Config(
+            self.repo, "acme", gonk.Target(quic="quic://box:1062", cert_dir="/c"), "agent-1", {}
+        )
+        nameless = gonk.Config(self.repo, "acme", gonk.Target(socket="/s.sock"), None, {})
+        self.assertEqual(gonk.socket_author(socket), " author=agent-1")
+        self.assertEqual(gonk.socket_author(quic), "")
+        self.assertEqual(gonk.socket_author(nameless), "")
 
     def test_file_puts_the_title_and_body_in_the_content(self):
         fake = FakeIkigai([(":append", ok("acme#1 urn:…\n"))])

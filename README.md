@@ -28,12 +28,33 @@ its dispatcher and `next` stops offering it to the next worker (ikigai-ledger 0.
 item 1199). `reject` is the dispatcher's answer when the evidence does not hold: `rejects=true`
 clears that state and the item is ready again. Both keep the `Evidence:` prefix in the comment,
 so a ledger older than 0.8.0 — which ignores the argument it does not know — reads the hand-back
-the same way.
+the same way. Over the owner's socket, where gonk names nobody, `report` and `close` pass this
+working tree's holder as the comment's free-text `author`, so a reader can tell hand-backs
+apart; over QUIC gonk names the machine itself, and nothing is added.
+
+### Evidence before there is a forge
+
+`report` and `close` accept any `http(s)` URL: the check is the URL's shape, not what it
+points at. The rules ask for the pull request, and a repository with no remote yet has none,
+so the easy wrong answer is a made-up one. Give gonk the repository as a browse root instead
+(`gonk.browse.root = "<name>=<path to this checkout>"` in gonk's `config.toml`, then restart
+gonk) and use gonk's own page for what changed as the evidence, with the commit in the note:
+
+```sh
+python3 tools/gonk.py report 7 \
+    --evidence http://127.0.0.1:1062/browse/urn:repo:<name>:file:<path> \
+    --note "fixed in <commit>; scripts/test.py exit 0; merged locally"
+```
+
+That page is served by gonk and shows the file as the working tree has it. It is local
+evidence and proves nothing to a reader on another machine, so a repository that will be
+shared gets a forge, and its pull requests, before its first hand-back.
 
 That is the whole protocol, and [`AGENTS.md`](AGENTS.md) states its rules: claim before you
 write, one agent per item and per working tree, reproduce before you fix, every change
 through a pull request with green CI, evidence on every report and close, and never a bare
-`#N`. Every agent reads that one file.
+`#N`. Every agent reads that one file. For building in the ikigai style, optional guides cover
+[resource-first design](docs/resource-design.md) and [UI conventions](docs/ui-conventions.md).
 
 ## What is in it
 
@@ -59,6 +80,8 @@ templates/               what new.py generates from: the sample, and one directo
 hooks/claude/            an OPTIONAL Claude Code hook that refuses edits without a claim
 worker/                  set up a machine that does agentic work for a hub, check it, run the loop
 docs/windows.md          Windows: WSL2, and what each agent does there
+docs/resource-design.md  how to design a feature resource-first: names first, code last
+docs/ui-conventions.md   the UI decision record: how a view is made, served, themed and tested
 .gitattributes           LF in every checkout, whatever core.autocrlf says
 ```
 
@@ -87,9 +110,9 @@ of the specs as language-neutral steps (an operation, its arguments, the date it
 and the whole answer expected), the service's tests run each one against the rules and again
 over HTTP, and a test fails if a scenario has no vector or a vector names no scenario. Time is
 an input: no rule reads a clock, so the due dates are the same on any day the tests run.
-Python (standard library only), Rust (one cargo workspace, standard library only) and Deno
-(TypeScript, standard library only) are the targets today; Go is planned, each running the
-same vector file. This repository's CI generates every target into a scratch directory and runs
+Python (standard library only), Rust (one cargo workspace, standard library only), Deno
+(TypeScript, standard library only) and Go (one module, standard library only) are the targets
+today, each running the same vector file. This repository's CI generates every target into a scratch directory and runs
 its tests, so a template that has gone stale fails.
 
 `seed` files one item per unchecked task in `openspec/changes/<id>/tasks.md`, keyed by the
@@ -279,8 +302,32 @@ resolve against something bound in the local `ikigai` by accident. The `ikigai` 
 fetches each resource's contract from gonk before it sends, so arguments are routed by the
 ledger's own declarations rather than by this script's guesses.
 
+Before configuring MCP, create a local grant named `agent` on the machine running the
+MCP server. Add this entry to `~/.config/ikigai/grants.json` (or
+`$XDG_CONFIG_HOME/ikigai/grants.json`), preserving any existing entries. This example
+allows a person's agent to work on ledger `acme`; replace `acme` in every scope with
+your ledger's name:
+
+```json
+{
+  "agent": [
+    "urn:cap:ledger:read:acme",
+    "urn:cap:store:read:graph:urn:iki:ledger:graph:acme",
+    "urn:cap:ledger:write:acme",
+    "urn:cap:store:write:graph:urn:iki:ledger:graph:acme"
+  ]
+}
+```
+
+For an unattended worker's MCP session, replace `urn:cap:ledger:write:acme` with
+`urn:cap:ledger:claim:acme` and `urn:cap:ledger:comment:acme`, keeping the other three
+scopes. That permits claims, renewals, releases and comments without filing, closing
+or relabeling items. This **local client ceiling** is separate from the grant gonk's
+operator creates for the machine certificate: over QUIC both ceilings apply. `init`
+prints the MCP command but does not create or modify this local grants file.
+
 An agent that speaks MCP is configured with `ikigai mcp`, which `init` prints for your
-transport, for example `ikigai mcp --override urn:iki:ledger:=quic://gonk-host:1062
+transport, for example `ikigai mcp --grant agent --override urn:iki:ledger:=quic://gonk-host:1062
 --cert-dir ~/gonk-cert`. Its tools are the ledger's own actions (`ledger-next__source`,
 `ledger-claim__sink`, …) filtered by the capability the session holds, so an agent is never
 offered what it may not do. The [gonk Book's MCP chapter](https://ikigai-rs.github.io/ikigai-tutorial/gonk/agent/mcp.html)
@@ -412,8 +459,8 @@ README says what else waits on the ledger.
   ledger reads, so the four questions run through `gonk.py harness` rather than as
   `urn:script:` resources an agent can call; they become scripts when that ceiling admits the
   harness graph.
-- **More languages** for the generator: Go, passing the same vectors (Rust and Deno have
-  landed: `--target rust`, `--target deno`).
+- **More languages** for the generator, passing the same vectors (Rust, Deno and Go have
+  landed: `--target rust`, `--target deno`, `--target go`).
 - **A second spec format**, beside OpenSpec, lifted to the same graph and ledger items by a
   mapping file rather than code.
 - **The worker's gaps, in the ledger.** One agent per repository enforced by the ledger rather
