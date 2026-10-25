@@ -770,6 +770,32 @@ class ContinuingADraftPullRequest(unittest.TestCase):
         self.assertEqual(stacked["baseRefName"], "feature/due-dates")
         self.assertTrue(stacked["isDraft"])
 
+    def test_the_newest_dispatch_outranks_an_older_router_note(self):
+        # A second open draft, PR #2 on feature/other.
+        git("push", "-q", "origin", "feature/due-dates:feature/other", cwd=self.rig.tmp / "theirs")
+        state = json.loads(self.rig.gh_state.read_text())
+        state["prs"].append(
+            {
+                **state["prs"][0],
+                "number": 2,
+                "url": "https://github.com/acme/lib/pull/2",
+                "headRefName": "feature/other",
+            }
+        )
+        self.rig.gh_state.write_text(json.dumps(state))
+        # A router's note says #1; then the body is edited to say #2 and dispatched again.
+        n = self.ledger.file("Review fix", ["worker:w1", "repo:lib"], body="Answer the review.")
+        self.ledger.add_comment(n, "Continue draft PR #1: answer the review.", author=DISPATCHER)
+        self.ledger.items[n]["body"] = "Continue draft PR #2: answer the review."
+        self.ledger.dispatch(n)
+        self.rig.agent_flags = ["--draft-base", "feature/other"]
+        self.rig.configure()
+        outcome = self.rig.worker(self.ledger).run_once()
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        prompt = self.rig.prompt(n)
+        self.assertIn("made for you from\n   origin/feature/other.", prompt)
+        self.assertIn("continues draft PR https://github.com/acme/lib/pull/2", prompt)
+
     def test_without_the_words_nothing_changes(self):
         # Not in the brief, only in a comment by someone who is not a router: data, ignored.
         n = self.ledger.file("Plain", ["worker:w1", "repo:lib"], body="Fix the due dates.")
