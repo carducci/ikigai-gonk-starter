@@ -571,6 +571,43 @@ class TheLoop(unittest.TestCase):
         ws.report.mkdir()
         self.assertEqual(self.rig.worker(self.ledger).report_lines(ws), [])
 
+    def test_a_confined_agent_with_a_pull_request_gets_its_report_handed_back(self):
+        # Claude Code writes only inside its worktree: a report path beside it was never
+        # written, and the evidence was lost (carducci#335).
+        self.rig.agent_flags = ["--confined", "--report", "Verdict: discuss\n"]
+        n = self.ledger.file("Confined", ["worker:w1", "repo:lib"])
+        outcome = self.run_once()
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/1\n"))
+        self.assertIn("The agent's report:\nVerdict: discuss\n", comment)
+
+    def test_a_confined_agent_with_no_pull_request_gets_its_evidence_handed_back(self):
+        url = "https://github.com/acme/lib/actions/runs/7"
+        self.rig.agent_flags = ["--confined", "--no-pr", "--evidence", url]
+        n = self.ledger.file("Confined, not a defect", ["worker:w1", "repo:lib"])
+        outcome = self.run_once()
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertTrue(comment.startswith(f"Evidence: {url}\n"))
+        self.assertIn("It does not reproduce", comment)
+
+    def test_the_report_in_the_worktree_is_never_shown_to_git(self):
+        self.rig.agent_flags = ["--confined", "--report", "Verdict: discuss\n"]
+        n = self.ledger.file("Not committed", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        self.assertIn("Verdict: discuss", evidence_comments(self.ledger.items[n])[0])
+        self.assertEqual((self.rig.record / f"status-{n}").read_text(), "")
+
+    def test_a_second_run_does_not_exclude_the_state_twice(self):
+        url = "https://github.com/acme/lib/actions/runs/7"
+        self.rig.agent_flags = ["--confined", "--no-pr", "--evidence", url]
+        for title in ("First", "Second"):
+            n = self.ledger.file(title, ["worker:w1", "repo:lib"])
+            self.assertEqual(self.run_once().code, worker.HANDED_BACK, title)
+        exclude = self.rig.home / "work" / "lib" / ".source" / ".git" / "info" / "exclude"
+        self.assertEqual(exclude.read_text().splitlines().count("/.gonk/state/"), 1)
+
     def test_checks_are_read_directly_when_the_token_may(self):
         state = self.rig.gh()
         state["checks"] = "ok"

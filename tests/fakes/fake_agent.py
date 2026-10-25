@@ -5,7 +5,11 @@ branch and "open a pull request" through the stub gh, or report evidence without
 
     fake_agent.py --record <dir> --gh "<argv of the stub gh>" --branch B --item N
                   [--sleep S] [--no-pr] [--evidence URL --report-file P] [--report TEXT]
-                  [--report-hex HEX] [--say TEXT] [--chatter TEXT] [--exit N] -- <prompt>
+                  [--report-hex HEX] [--confined] [--say TEXT] [--chatter TEXT] [--exit N]
+                  -- <prompt>
+
+With --confined it writes only inside its worktree, as Claude Code lets an agent: a report
+file outside it is not written (carducci#335).
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ def main() -> int:
     p.add_argument("--report-file")
     p.add_argument("--report", help="text for the report file, whether or not it opens a PR")
     p.add_argument("--report-hex", help="bytes for the report file, in hex: not always UTF-8")
+    p.add_argument("--confined", action="store_true", help="write nothing outside the worktree")
     p.add_argument("--say", help="its final message, on stdout, as `claude -p` prints one")
     p.add_argument("--chatter", help="progress on stderr, as `codex exec` writes it")
     p.add_argument("--exit", type=int, default=0)
@@ -53,12 +58,17 @@ def main() -> int:
 
     if args.chatter:
         print(args.chatter, file=sys.stderr, flush=True)
-    if args.evidence:
-        Path(args.report_file).write_text(f"{args.evidence}\nIt does not reproduce: see the run.\n")
-    if args.report is not None:
-        Path(args.report_file).write_text(args.report)
-    if args.report_hex is not None:
-        Path(args.report_file).write_bytes(bytes.fromhex(args.report_hex))
+    report = Path(args.report_file) if args.report_file else None
+    if report and args.confined and not report.resolve().is_relative_to(Path.cwd().resolve()):
+        report = None
+    if args.evidence and report:
+        report.write_text(f"{args.evidence}\nIt does not reproduce: see the run.\n")
+    if args.report is not None and report:
+        report.write_text(args.report)
+    if args.report_hex is not None and report:
+        report.write_bytes(bytes.fromhex(args.report_hex))
+    status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+    (record / f"status-{args.item}").write_text(status.stdout)
     if not args.no_pr:
         Path("WORKED.txt").write_text(f"item {args.item}\n")
         git("add", "WORKED.txt")
