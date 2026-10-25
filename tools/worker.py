@@ -857,6 +857,8 @@ class PullRequest:
     merged_at: str = ""  # GitHub's mergedAt, ISO 8601; empty when not merged
     merged_by: str = ""  # the merger's login, which cannot tell an agent from its dispatcher
     # when both use one GitHub identity: when the merge happened can (ledger item 1232)
+    base: str = ""  # the branch it merges into, GitHub's baseRefName
+    draft: bool = False
 
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -893,7 +895,7 @@ class GitHub:
     def pull_requests(self, branch: str) -> tuple[list[PullRequest], str | None]:
         done = self.run(
             "pr", "list", "-R", self.slug, "--head", branch, "--state", "all",
-            "--json", "number,url,state,headRefOid,mergedAt,mergedBy",
+            "--json", "number,url,state,headRefOid,mergedAt,mergedBy,baseRefName,isDraft",
         )  # fmt: skip
         if done.returncode != 0:
             return [], (done.stderr or done.stdout).strip() or f"gh exit {done.returncode}"
@@ -909,6 +911,8 @@ class GitHub:
                 r.get("headRefOid", ""),
                 merged_at=r.get("mergedAt") or "",
                 merged_by=(r.get("mergedBy") or {}).get("login") or "",
+                base=r.get("baseRefName") or "",
+                draft=bool(r.get("isDraft")),
             )
             for r in rows
         ]
