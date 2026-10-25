@@ -752,10 +752,11 @@ class Workspace:
     report: Path
 
 
-def make_workspace(root: Path, repo: Repo, number: int) -> Workspace:
-    """A fresh worktree of `origin/<base>` at `<root>/<repo>/item-<N>`, from one clone per
-    repository (`.source`, fetched before each item). A directory left by an earlier run is
-    never reused or removed: the next free `item-<N>.<k>` is taken instead."""
+def make_workspace(root: Path, repo: Repo, number: int, start: str | None = None) -> Workspace:
+    """A fresh worktree of `origin/<start>` (by default `origin/<base>`) at
+    `<root>/<repo>/item-<N>`, from one clone per repository (`.source`, fetched before each
+    item). A directory left by an earlier run is never reused or removed: the next free
+    `item-<N>.<k>` is taken instead."""
     home = root / repo.name
     home.mkdir(parents=True, exist_ok=True)
     source = home / ".source"
@@ -776,10 +777,12 @@ def make_workspace(root: Path, repo: Repo, number: int) -> Workspace:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     branch = f"worker/{name}-{stamp}"  # the directory's name: two runs in one second differ
     path = home / name
+    # A stacked branch never tracks the branch it continues: a bare `git push` with
+    # push.default=upstream would land on someone else's work.
+    track = ["--no-track"] if start else []
+    origin = f"origin/{start or repo.base}"
     must(
-        git(
-            "worktree", "add", "--quiet", "-b", branch, str(path), f"origin/{repo.base}", cwd=source
-        ),
+        git("worktree", "add", "--quiet", *track, "-b", branch, str(path), origin, cwd=source),
         "git worktree add",
     )
     return Workspace(
