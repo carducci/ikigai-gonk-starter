@@ -767,6 +767,18 @@ class ContinuingADraftPullRequest(unittest.TestCase):
         self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
         self.assertIn("`gh pr create --draft --base 'feature/$USER'`", self.rig.prompt(n))
 
+    def test_a_branch_named_like_a_placeholder_stays_literal(self):
+        for branch in ("feature/{base}", "feature/{budget}"):
+            with self.subTest(branch=branch):
+                self.make_rig()
+                theirs = self.rig.tmp / "theirs"
+                git("push", "-q", "origin", f"feature/due-dates:{branch}", cwd=theirs)
+                self.draft(state="OPEN", headRefName=branch)
+                n, _ = self.run_once("Continue draft PR #1: answer the review.")
+                prompt = self.rig.prompt(n)
+                self.assertIn(f"made for you from\n   origin/{branch}.", prompt)
+                self.assertIn(f"`gh pr create --draft --base '{branch}'`", prompt)
+
     def test_the_stacked_pull_request_is_the_evidence(self):
         self.rig.agent_flags = ["--draft-base", "feature/due-dates"]
         n, outcome = self.run_once("Continue draft PR #1: answer the review.")
