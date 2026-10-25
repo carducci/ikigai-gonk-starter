@@ -802,6 +802,10 @@ the Pop!_OS 24.04 worker, `run --once`) showed, and what is still to try:
    back the same way, naming the overrun. With a pull request, the comment also carries the
    report file's last 40 non-blank lines under "The agent's report:" (a triage's closing
    `Verdict:`, a `Question for …:`); with no report file it carries the pull requests alone.
+   The report file is `<worktree>/.gonk/state/worker-report`, inside the worktree because an
+   agent such as Claude Code may write nowhere else; it is read before the worktree is
+   removed, and the worker adds `/.gonk/state/` to the clone's `info/exclude` (once) so it is
+   never committed, whatever the repository's own `.gitignore` says.
 
 `run --once` exits 0 when it handed an item back with evidence, 3 when there was nothing to
 take, 4 when it took one and could not hand it back with evidence (lost, overrun, stopped,
