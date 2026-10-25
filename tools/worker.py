@@ -28,7 +28,9 @@ What it does with one item, in order:
    finds the item held by someone else, released, or closed, or that the ledger refuses, means
    the claim is lost: the agent is stopped and the loss is reported, and nothing is released.
 3. A fresh worktree branched from `origin/<base>` under the work root (default `~/work`, which
-   must be under this account's own home), `<work root>/<repo>/item-<N>`.
+   must be under this account's own home), `<work root>/<repo>/item-<N>`. When the brief says
+   `Continue draft PR #N` (`continued_pr`), it is branched from that open PR's head instead,
+   and the agent opens a draft against that branch: a stacked PR, the evidence as any other.
 4. The agent, from the configured command template, with the item as its brief behind a fixed
    preamble; stopped when the wall-clock budget runs out. The title and body are the task (the
    dispatch pinned them); the comments follow as quoted blocks, each under its author, and
@@ -585,6 +587,58 @@ def dispatch_problem(item: dict, routers: list[str], labels: list[str]) -> str |
     return None
 
 
+CONTINUE_PR = re.compile(r"\bContinue draft PR (?:([A-Za-z0-9-]+/[A-Za-z0-9._-]+))?#(\d+)\b")
+
+
+def continued_pr(item: dict, routers: list[str]) -> tuple[str | None, int] | None:
+    """(owner/name or None, number) of the pull request the brief says to continue with
+    `Continue draft PR #N` (or `owner/name#N`), or None. Read from what the newest dispatch
+    stands behind: the title and body it pinned, then the routers' comments from that dispatch
+    on, oldest first, the newest naming one winning. A router's note older than that dispatch
+    never outranks it, and a comment by anyone else is data, and never stacks the work."""
+    texts = [item.get("title") or "", item.get("body") or ""]
+    later: list[str] = []
+    for c in sorted(item.get("comments") or [], key=lambda c: c.get("time") or ""):
+        text = c.get("text") or ""
+        if not by_router(c, routers) or text.startswith(HAND_BACK_PREFIXES):
+            continue
+        if gonk.parse_dispatch(text) is not None:
+            later = []  # notes before this dispatch are older than the brief it pins
+        later.append(text)
+    texts += later
+    found = None
+    for text in texts:
+        for m in CONTINUE_PR.finditer(text):
+            found = (m.group(1), int(m.group(2)))
+    return found
+
+
+def stack_problem(pr: dict | None, err: str | None, slug: str, named: str | None) -> str | None:
+    """Why the worker may not stack on this pull request, or None when it may: it must be open,
+    and in the item's own repository with its head branch there too."""
+    if named and named.lower() != slug.lower():
+        return f"it is {named}'s, not in {slug}, the item's repository"
+    if pr is None:
+        return f"it could not be read in {slug}: {err}"
+    if pr.get("isCrossRepository"):
+        return f"its branch is in a fork, not in {slug}, the item's repository"
+    state = (pr.get("state") or "").lower()
+    if state != "open":
+        return f"it is {state}, so there is nothing to continue"
+    return None
+
+
+def stack_line(continued: dict, start: str, pr: PullRequest | None) -> str:
+    """What the hand-back says of the evidence `pr` of an item continuing `continued`: stacked
+    only when it is a draft against the continued PR's head branch, `start`."""
+    if pr is None or pr.base != start or not pr.draft:
+        what = f"{pr.url} is {'a' if pr.draft else 'not a'} draft, against {pr.base}" if pr else ""
+        return f"It was to stack on draft PR {continued['url']} ({start}), but " + (
+            f"{what}: it is not stacked." if pr else "it opened no pull request."
+        )
+    return f"Its branch is stacked on draft PR {continued['url']} ({start})."
+
+
 def redispatched_since(item: dict, routers: list[str], at: str | None) -> bool:
     """Whether a router dispatched the item after the instant `at` (a hand-back)."""
     try:
@@ -752,10 +806,11 @@ class Workspace:
     report: Path
 
 
-def make_workspace(root: Path, repo: Repo, number: int) -> Workspace:
-    """A fresh worktree of `origin/<base>` at `<root>/<repo>/item-<N>`, from one clone per
-    repository (`.source`, fetched before each item). A directory left by an earlier run is
-    never reused or removed: the next free `item-<N>.<k>` is taken instead."""
+def make_workspace(root: Path, repo: Repo, number: int, start: str | None = None) -> Workspace:
+    """A fresh worktree of `origin/<start>` (by default `origin/<base>`) at
+    `<root>/<repo>/item-<N>`, from one clone per repository (`.source`, fetched before each
+    item). A directory left by an earlier run is never reused or removed: the next free
+    `item-<N>.<k>` is taken instead."""
     home = root / repo.name
     home.mkdir(parents=True, exist_ok=True)
     source = home / ".source"
@@ -776,10 +831,12 @@ def make_workspace(root: Path, repo: Repo, number: int) -> Workspace:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     branch = f"worker/{name}-{stamp}"  # the directory's name: two runs in one second differ
     path = home / name
+    # A stacked branch never tracks the branch it continues: a bare `git push` with
+    # push.default=upstream would land on someone else's work.
+    track = ["--no-track"] if start else []
+    origin = f"origin/{start or repo.base}"
     must(
-        git(
-            "worktree", "add", "--quiet", "-b", branch, str(path), f"origin/{repo.base}", cwd=source
-        ),
+        git("worktree", "add", "--quiet", *track, "-b", branch, str(path), origin, cwd=source),
         "git worktree add",
     )
     # The report lives inside the worktree: an agent may write nowhere else (carducci#335).
@@ -825,6 +882,8 @@ class PullRequest:
     merged_at: str = ""  # GitHub's mergedAt, ISO 8601; empty when not merged
     merged_by: str = ""  # the merger's login, which cannot tell an agent from its dispatcher
     # when both use one GitHub identity: when the merge happened can (ledger item 1232)
+    base: str = ""  # the branch it merges into, GitHub's baseRefName
+    draft: bool = False
 
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -845,10 +904,23 @@ class GitHub:
         except subprocess.TimeoutExpired:
             return subprocess.CompletedProcess(argv, 124, "", "gh did not answer within 120s")
 
+    def pull_request(self, number: int) -> tuple[dict | None, str | None]:
+        """One pull request of this repository, by number: its state, branches and URL."""
+        done = self.run(
+            "pr", "view", str(number), "-R", self.slug,
+            "--json", "number,url,state,headRefName,isCrossRepository",
+        )  # fmt: skip
+        if done.returncode != 0:
+            return None, (done.stderr or done.stdout).strip() or f"gh exit {done.returncode}"
+        try:
+            return json.loads(done.stdout), None
+        except ValueError as e:
+            return None, f"gh pr view did not answer JSON: {e}"
+
     def pull_requests(self, branch: str) -> tuple[list[PullRequest], str | None]:
         done = self.run(
             "pr", "list", "-R", self.slug, "--head", branch, "--state", "all",
-            "--json", "number,url,state,headRefOid,mergedAt,mergedBy",
+            "--json", "number,url,state,headRefOid,mergedAt,mergedBy,baseRefName,isDraft",
         )  # fmt: skip
         if done.returncode != 0:
             return [], (done.stderr or done.stdout).strip() or f"gh exit {done.returncode}"
@@ -864,6 +936,8 @@ class GitHub:
                 r.get("headRefOid", ""),
                 merged_at=r.get("mergedAt") or "",
                 merged_by=(r.get("mergedBy") or {}).get("login") or "",
+                base=r.get("baseRefName") or "",
+                draft=bool(r.get("isDraft")),
             )
             for r in rows
         ]
@@ -946,7 +1020,7 @@ its rules hold beside these.
 3. Work only in this directory, {workdir}, on the branch {branch}, made for you from
    origin/{base}. Never read or write any other checkout.
 4. Every change through a pull request with green CI: commit, push this branch
-   (`git push -u origin {branch}`), open ONE pull request against {base} with `gh pr create`,
+   (`git push -u origin {branch}`), open ONE pull request against {base} with {pr_create},
    and see its CI to green, fixing what fails. NEVER merge it, never enable auto-merge, and
    never close the item: the dispatcher does both after checking your evidence.
 5. The pull request is your evidence. Say in its description what you reproduced, what you
@@ -1063,19 +1137,30 @@ def brief(
     repo: Repo,
     budget: int,
     routers: list[str] | None = None,
+    stacked_on: dict | None = None,
 ) -> str:
+    """The preamble, then the item. `stacked_on` is the pull request it continues: the branch
+    was cut from that PR's head, and the agent opens a draft against it."""
+    base, pr_create = repo.base, "`gh pr create`"
+    if stacked_on:
+        base = stacked_on["headRefName"]
+        pr_create = (
+            f"`gh pr create --draft --base {shlex.quote(base)}` (a stacked draft: this item "
+            f"continues draft PR {stacked_on['url']}, whose branch {base} is not yours to push to)"
+        )
     values = {
         "{display}": str(item.get("display") or f"#{item.get('number')}"),
         "{report_file}": str(ws.report),
         "{workdir}": str(ws.path),
         "{branch}": ws.branch,
-        "{base}": repo.base,
+        "{pr_create}": pr_create,
+        "{base}": base,
         "{budget}": spoken(budget),
         "{ledger}": ledger,
     }
-    text = PREAMBLE
-    for token, value in values.items():
-        text = text.replace(token, value)
+    # One pass, so an inserted value (a branch named `feature/{base}`) is never expanded again.
+    tokens = re.compile("|".join(map(re.escape, values)))
+    text = tokens.sub(lambda m: values[m.group(0)], PREAMBLE)
     title = (item.get("title") or "").strip()
     body = (item.get("body") or "").strip()
     comments = brief_comments(item, routers)
@@ -1320,8 +1405,23 @@ class Worker:
 
     def work_claimed(self, item: dict, repo: Repo, beat: Heartbeat) -> Outcome:
         number, display, holder = item["number"], item.get("display"), self.cfg.holder
-        ws = make_workspace(self.root, repo, number)
-        text = brief(item, self.cfg.ledger, ws, repo, self.wc.budget, self.wc.routers)
+        gh = GitHub(self.wc.gh, repo.github)
+        stacked_on = None
+        if (named := continued_pr(item, self.wc.routers)) is not None:
+            owner, pr_number = named
+            elsewhere = owner and owner.lower() != repo.github.lower()
+            stacked_on, err = (None, None) if elsewhere else gh.pull_request(pr_number)
+            problem = stack_problem(stacked_on, err, repo.github, owner)
+            if problem:
+                note = (
+                    f"gonk worker `{holder}` hands {display} back without starting: its brief "
+                    f"says to continue draft PR {owner or ''}#{pr_number}, and {problem}."
+                )
+                self.release_if_ours(number, note)
+                return Outcome(NOT_HANDED_BACK, note)
+        start = stacked_on["headRefName"] if stacked_on else None
+        ws = make_workspace(self.root, repo, number, start)
+        text = brief(item, self.cfg.ledger, ws, repo, self.wc.budget, self.wc.routers, stacked_on)
         ws.prompt.write_text(text, encoding="utf-8")
         argv = agent_argv(
             self.wc.command,
@@ -1354,7 +1454,6 @@ class Worker:
         exited = datetime.now(UTC)
         took = spoken(time.monotonic() - started)
         where = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
-        gh = GitHub(self.wc.gh, repo.github)
 
         if ended == "lost":
             # Not ours any more: say so on the item, release NOTHING (it is someone else's,
@@ -1433,6 +1532,8 @@ class Worker:
             f"gonk worker `{holder}` handed this back: {agent}. It never closes and never "
             "merges; the dispatcher does both, after checking this evidence.",
         ]
+        if stacked_on:
+            body += ["", stack_line(stacked_on, start, prs[0] if prs else None)]
         if prs:
             body += ["", *lines]
             if report := self.report_lines(ws)[-40:]:  # the last: a `Verdict:` ends it
