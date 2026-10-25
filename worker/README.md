@@ -776,7 +776,9 @@ the Pop!_OS 24.04 worker, `run --once`) showed, and what is still to try:
    is cut from that pull request's
    head branch instead, and the preamble asks for `gh pr create --draft --base <that branch>`:
    a stacked draft, so the worker only ever pushes to a branch it made. Its hand-back takes
-   that stacked PR as the evidence, like any other. A pull request that is closed, merged, or
+   that stacked PR as the evidence, like any other, and calls it stacked only when GitHub
+   says it is a draft against that branch; otherwise it says what the PR's base is, and
+   whether it is a draft. A pull request that is closed, merged, or
    not in the item's repository (another repository, or a fork's branch) is refused before
    the agent starts, with a note saying which, and the item is handed back. A comment by
    anyone but a router never stacks the work.
