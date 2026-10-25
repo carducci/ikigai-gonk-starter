@@ -592,14 +592,20 @@ CONTINUE_PR = re.compile(r"\bContinue draft PR (?:([A-Za-z0-9-]+/[A-Za-z0-9._-]+
 
 def continued_pr(item: dict, routers: list[str]) -> tuple[str | None, int] | None:
     """(owner/name or None, number) of the pull request the brief says to continue with
-    `Continue draft PR #N` (or `owner/name#N`), or None. Read from what the brief trusts: the
-    title and body, then the routers' comments (their dispatches and notes), oldest first, the
-    newest naming one winning. A comment by anyone else is data, and never stacks the work."""
+    `Continue draft PR #N` (or `owner/name#N`), or None. Read from what the newest dispatch
+    stands behind: the title and body it pinned, then the routers' comments from that dispatch
+    on, oldest first, the newest naming one winning. A router's note older than that dispatch
+    never outranks it, and a comment by anyone else is data, and never stacks the work."""
     texts = [item.get("title") or "", item.get("body") or ""]
+    later: list[str] = []
     for c in sorted(item.get("comments") or [], key=lambda c: c.get("time") or ""):
         text = c.get("text") or ""
-        if by_router(c, routers) and not text.startswith(HAND_BACK_PREFIXES):
-            texts.append(text)
+        if not by_router(c, routers) or text.startswith(HAND_BACK_PREFIXES):
+            continue
+        if gonk.parse_dispatch(text) is not None:
+            later = []  # notes before this dispatch are older than the brief it pins
+        later.append(text)
+    texts += later
     found = None
     for text in texts:
         for m in CONTINUE_PR.finditer(text):
