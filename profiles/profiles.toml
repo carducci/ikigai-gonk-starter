@@ -36,6 +36,8 @@ sections = [
     "review-every-commit",
     "audits",
     "claude-hook",
+    "ask-dax",
+    "design-resource-first",
 ]
 
 [base]
@@ -53,6 +55,8 @@ sections = [
     "layout",
     "building-ikigai-style",
     "claude-hook",
+    "ask-dax",
+    "design-resource-first",
 ]
 # The optional Claude Code hook that refuses an edit without a claim (hooks/claude/). Every
 # process claims before it writes, so every repository carries it; it is on only once the

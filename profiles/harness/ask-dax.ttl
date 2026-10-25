@@ -1,0 +1,6 @@
+guide:ask-dax-dont-guess a harness:Guide ;
+    rdfs:label "ask Dax, don't guess" ;
+    rdfs:comment "When the task contradicts the code or the spec, needs a decision it doesn't make, or would change files outside its scope, push what you have to a draft pull request, put one `Question for Dax:` in its description and the report, and stop." ;
+    harness:statedIn "AGENTS.md" ; harness:section "Ask Dax, don't guess" ;
+    harness:direction harness:feedforward ; harness:execution harness:inferential ;
+    harness:stage harness:toolCall ; harness:category harness:authoritySafety .

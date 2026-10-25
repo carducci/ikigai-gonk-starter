@@ -1,0 +1,6 @@
+guide:design-resource-first a harness:Guide ;
+    rdfs:label "design resource-first" ;
+    rdfs:comment "Before designing a new app, module, endpoint family or feature, do the resource-first pass, names first and code last, in the form the repository's design class sets; a repository with no class may skip it." ;
+    harness:statedIn "AGENTS.md" ; harness:section "Design resource-first" ;
+    harness:direction harness:feedforward ; harness:execution harness:inferential ;
+    harness:stage harness:toolCall ; harness:category harness:architectureFitness .
