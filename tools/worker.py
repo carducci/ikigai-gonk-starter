@@ -834,6 +834,19 @@ class GitHub:
         except subprocess.TimeoutExpired:
             return subprocess.CompletedProcess(argv, 124, "", "gh did not answer within 120s")
 
+    def pull_request(self, number: int) -> tuple[dict | None, str | None]:
+        """One pull request of this repository, by number: its state, branches and URL."""
+        done = self.run(
+            "pr", "view", str(number), "-R", self.slug,
+            "--json", "number,url,state,headRefName,isCrossRepository",
+        )  # fmt: skip
+        if done.returncode != 0:
+            return None, (done.stderr or done.stdout).strip() or f"gh exit {done.returncode}"
+        try:
+            return json.loads(done.stdout), None
+        except ValueError as e:
+            return None, f"gh pr view did not answer JSON: {e}"
+
     def pull_requests(self, branch: str) -> tuple[list[PullRequest], str | None]:
         done = self.run(
             "pr", "list", "-R", self.slug, "--head", branch, "--state", "all",
