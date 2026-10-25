@@ -1144,9 +1144,9 @@ def brief(
         "{budget}": spoken(budget),
         "{ledger}": ledger,
     }
-    text = PREAMBLE
-    for token, value in values.items():
-        text = text.replace(token, value)
+    # One pass, so an inserted value (a branch named `feature/{base}`) is never expanded again.
+    tokens = re.compile("|".join(map(re.escape, values)))
+    text = tokens.sub(lambda m: values[m.group(0)], PREAMBLE)
     title = (item.get("title") or "").strip()
     body = (item.get("body") or "").strip()
     comments = brief_comments(item, routers)
