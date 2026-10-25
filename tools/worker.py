@@ -782,21 +782,22 @@ def make_workspace(root: Path, repo: Repo, number: int) -> Workspace:
         ),
         "git worktree add",
     )
+    # The report lives inside the worktree: an agent may write nowhere else (carducci#335).
+    (path / ".gonk" / "state").mkdir(parents=True, exist_ok=True)
     return Workspace(
         path=path,
         source=source,
         branch=branch,
         log=home / f"{name}.log",
         prompt=home / f"{name}.prompt.md",
-        report=home / f"{name}.report",
+        report=path / ".gonk" / "state" / "worker-report",
     )
 
 
 def remove_workspace(ws: Workspace) -> None:
     git("worktree", "remove", "--force", str(ws.path), cwd=ws.source)
     git("branch", "-D", ws.branch, cwd=ws.source)
-    for leftover in (ws.prompt, ws.report):
-        leftover.unlink(missing_ok=True)
+    ws.prompt.unlink(missing_ok=True)  # the report went with the worktree
 
 
 @dataclass
