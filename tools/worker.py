@@ -1382,8 +1382,9 @@ class Worker:
                 )
                 self.release_if_ours(number, note)
                 return Outcome(NOT_HANDED_BACK, note)
-        ws = make_workspace(self.root, repo, number)
-        text = brief(item, self.cfg.ledger, ws, repo, self.wc.budget, self.wc.routers)
+        start = stacked_on["headRefName"] if stacked_on else None
+        ws = make_workspace(self.root, repo, number, start)
+        text = brief(item, self.cfg.ledger, ws, repo, self.wc.budget, self.wc.routers, stacked_on)
         ws.prompt.write_text(text, encoding="utf-8")
         argv = agent_argv(
             self.wc.command,
