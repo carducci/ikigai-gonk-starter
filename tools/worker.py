@@ -1116,8 +1116,8 @@ def brief(
     if stacked_on:
         base = stacked_on["headRefName"]
         pr_create = (
-            f"`gh pr create --draft --base {base}` (a stacked draft: this item continues draft "
-            f"PR {stacked_on['url']}, whose branch {base} is not yours to push to)"
+            f"`gh pr create --draft --base {shlex.quote(base)}` (a stacked draft: this item "
+            f"continues draft PR {stacked_on['url']}, whose branch {base} is not yours to push to)"
         )
     values = {
         "{display}": str(item.get("display") or f"#{item.get('number')}"),
