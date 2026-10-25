@@ -778,6 +778,16 @@ class ContinuingADraftPullRequest(unittest.TestCase):
         self.assertEqual(stacked["baseRefName"], "feature/due-dates")
         self.assertTrue(stacked["isDraft"])
 
+    def test_a_pull_request_that_is_not_stacked_is_not_called_stacked(self):
+        # The agent runs a bare `gh pr create`: no --draft, against main.
+        n, outcome = self.run_once("Continue draft PR #1: answer the review.")
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertNotIn("Its branch is stacked", comment)
+        self.assertIn("https://github.com/acme/lib/pull/2 is not a draft, against main", comment)
+        [listed] = [c for c in self.rig.gh()["calls"] if c[:2] == ["pr", "list"]]
+        self.assertIn("baseRefName", listed[listed.index("--json") + 1])
+
     def test_the_newest_dispatch_outranks_an_older_router_note(self):
         # A second open draft, PR #2 on feature/other.
         git("push", "-q", "origin", "feature/due-dates:feature/other", cwd=self.rig.tmp / "theirs")
