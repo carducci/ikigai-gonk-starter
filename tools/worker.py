@@ -784,6 +784,7 @@ def make_workspace(root: Path, repo: Repo, number: int) -> Workspace:
     )
     # The report lives inside the worktree: an agent may write nowhere else (carducci#335).
     (path / ".gonk" / "state").mkdir(parents=True, exist_ok=True)
+    exclude_state(path)
     return Workspace(
         path=path,
         source=source,
@@ -792,6 +793,18 @@ def make_workspace(root: Path, repo: Repo, number: int) -> Workspace:
         prompt=home / f"{name}.prompt.md",
         report=path / ".gonk" / "state" / "worker-report",
     )
+
+
+def exclude_state(path: Path) -> None:
+    """Keep `.gonk/state/`, the report's directory, out of every commit, whatever the target
+    repository's .gitignore says: one line, added once, to the exclude file git names."""
+    named = must(git("rev-parse", "--git-path", "info/exclude", cwd=path), "git rev-parse")
+    exclude = path / named.strip()  # shared by the clone's worktrees; relative to `path`
+    text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+    if "/.gonk/state/" not in text.splitlines():
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        sep = "\n" if text and not text.endswith("\n") else ""
+        exclude.write_text(text + sep + "/.gonk/state/\n", encoding="utf-8")
 
 
 def remove_workspace(ws: Workspace) -> None:

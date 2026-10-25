@@ -603,7 +603,7 @@ class TheLoop(unittest.TestCase):
         url = "https://github.com/acme/lib/actions/runs/7"
         self.rig.agent_flags = ["--confined", "--no-pr", "--evidence", url]
         for title in ("First", "Second"):
-            n = self.ledger.file(title, ["worker:w1", "repo:lib"])
+            self.ledger.file(title, ["worker:w1", "repo:lib"])
             self.assertEqual(self.run_once().code, worker.HANDED_BACK, title)
         exclude = self.rig.home / "work" / "lib" / ".source" / ".git" / "info" / "exclude"
         self.assertEqual(exclude.read_text().splitlines().count("/.gonk/state/"), 1)
