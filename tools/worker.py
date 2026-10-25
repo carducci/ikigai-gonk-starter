@@ -628,6 +628,11 @@ def stack_problem(pr: dict | None, err: str | None, slug: str, named: str | None
     return None
 
 
+def stack_line(continued: dict, start: str, pr: PullRequest | None) -> str:
+    """What the hand-back says of the evidence `pr` of an item continuing `continued`."""
+    return f"Its branch is stacked on draft PR {continued['url']} ({start})."
+
+
 def redispatched_since(item: dict, routers: list[str], at: str | None) -> bool:
     """Whether a router dispatched the item after the instant `at` (a hand-back)."""
     try:
@@ -1508,7 +1513,7 @@ class Worker:
             "merges; the dispatcher does both, after checking this evidence.",
         ]
         if stacked_on:
-            body += ["", f"Its branch is stacked on draft PR {stacked_on['url']} ({start})."]
+            body += ["", stack_line(stacked_on, start, prs[0] if prs else None)]
         if prs:
             body += ["", *lines]
             if report := self.report_lines(ws)[-40:]:  # the last: a `Verdict:` ends it
