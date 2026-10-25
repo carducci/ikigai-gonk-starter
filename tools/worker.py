@@ -629,7 +629,13 @@ def stack_problem(pr: dict | None, err: str | None, slug: str, named: str | None
 
 
 def stack_line(continued: dict, start: str, pr: PullRequest | None) -> str:
-    """What the hand-back says of the evidence `pr` of an item continuing `continued`."""
+    """What the hand-back says of the evidence `pr` of an item continuing `continued`: stacked
+    only when it is a draft against the continued PR's head branch, `start`."""
+    if pr is None or pr.base != start or not pr.draft:
+        what = f"{pr.url} is {'a' if pr.draft else 'not a'} draft, against {pr.base}" if pr else ""
+        return f"It was to stack on draft PR {continued['url']} ({start}), but " + (
+            f"{what}: it is not stacked." if pr else "it opened no pull request."
+        )
     return f"Its branch is stacked on draft PR {continued['url']} ({start})."
 
 
