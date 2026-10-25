@@ -1495,6 +1495,8 @@ class Worker:
             f"gonk worker `{holder}` handed this back: {agent}. It never closes and never "
             "merges; the dispatcher does both, after checking this evidence.",
         ]
+        if stacked_on:
+            body += ["", f"Its branch is stacked on draft PR {stacked_on['url']} ({start})."]
         if prs:
             body += ["", *lines]
             if report := self.report_lines(ws)[-40:]:  # the last: a `Verdict:` ends it
