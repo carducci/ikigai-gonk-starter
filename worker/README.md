@@ -770,8 +770,10 @@ the Pop!_OS 24.04 worker, `run --once`) showed, and what is still to try:
 4. **Workspace.** One clone per repository (`<work_root>/<repo>/.source`, fetched before each
    item), and a fresh worktree on a new branch `worker/item-<N>-<time>` from `origin/<base>`.
    A directory left by an earlier run is never reused: the next is `item-<N>.2`.
-   **A continued pull request.** When the item's title or body, or a router's comment, says
-   `Continue draft PR #N` (or `owner/name#N`), the new branch is cut from that pull request's
+   **A continued pull request.** When the item's title or body, or a router's comment no
+   older than the newest dispatch, says `Continue draft PR #N` (or `owner/name#N`; the newest
+   wins, and a note before that dispatch never outranks the body it pinned), the new branch
+   is cut from that pull request's
    head branch instead, and the preamble asks for `gh pr create --draft --base <that branch>`:
    a stacked draft, so the worker only ever pushes to a branch it made. Its hand-back takes
    that stacked PR as the evidence, like any other. A pull request that is closed, merged, or
