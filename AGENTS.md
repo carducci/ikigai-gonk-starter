@@ -186,3 +186,38 @@ items the dispatcher marks for them, and work each one in a fresh working tree o
 
 `hooks/claude/` holds a Claude Code hook that refuses a file edit while this working tree
 holds no live claim. It is optional and Claude-only; every rule above holds without it.
+
+## Ask Dax, don't guess
+
+When you meet something your task doesn't settle, stop and ask Dax, the way you would stop and
+ask a person at the keyboard. Stop when the task contradicts the code or the spec, when it needs
+a decision it doesn't make, or when finishing would mean changing files outside its scope. Don't
+stop for what reading the repository, its openspec/ or this file settles.
+
+1. Open your pull request as a draft: `gh pr create --draft`. Never mark it ready for review.
+2. To ask: commit and push what you have, and add a section `Question for Dax:` to the draft's
+   description. Give one question, what you found that raised it, and the options you see, with
+   the one you would pick. Write the draft's URL on the first line of your report, then
+   `Question for Dax:` and the question. Then stop. Don't guess, and don't widen the task.
+3. If the dispatcher's notes say `Continue draft PR #N`, start by merging its branch into yours
+   (`git fetch origin <its branch>`, then `git merge --no-edit FETCH_HEAD`), and begin your new
+   draft's description with `Supersedes #N`.
+
+## Design resource-first
+
+Before you design or brief a new app, module, endpoint family or feature, do the resource-first
+pass: names first, code last. Write the result under `## Resource map` in the change's
+`proposal.md`, or in the pull request when there is no spec. This repository's class is in
+ikigraph's `artifacts/team/design-classes.toml`, and it sets the form:
+
+- `roc` and `dogfood`: a map, a table with the columns set, name, kind and how, then the
+  corridors and sealed names, and one line for each piece of code saying why it can't be a
+  composition. The method and a worked example are in `docs/resource-design.md`.
+- `legacy`: no map. For each new domain concept or endpoint family, one line,
+  `Seam: <concept> would be` and the resource name in backticks.
+- A fix or maintenance, in any class: `Not needed:` and the reason.
+- A repository with no class (the starter fork, `carducci/ikigai-gonk-starter`): the pass is
+  optional, as upstream's starter has it.
+
+A design that hits a wall in the kernel is a finding. Say so in your report rather than coding
+around it.
