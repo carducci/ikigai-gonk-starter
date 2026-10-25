@@ -1368,6 +1368,20 @@ class Worker:
 
     def work_claimed(self, item: dict, repo: Repo, beat: Heartbeat) -> Outcome:
         number, display, holder = item["number"], item.get("display"), self.cfg.holder
+        gh = GitHub(self.wc.gh, repo.github)
+        stacked_on = None
+        if (named := continued_pr(item, self.wc.routers)) is not None:
+            owner, pr_number = named
+            elsewhere = owner and owner.lower() != repo.github.lower()
+            stacked_on, err = (None, None) if elsewhere else gh.pull_request(pr_number)
+            problem = stack_problem(stacked_on, err, repo.github, owner)
+            if problem:
+                note = (
+                    f"gonk worker `{holder}` hands {display} back without starting: its brief "
+                    f"says to continue draft PR {owner or ''}#{pr_number}, and {problem}."
+                )
+                self.release_if_ours(number, note)
+                return Outcome(NOT_HANDED_BACK, note)
         ws = make_workspace(self.root, repo, number)
         text = brief(item, self.cfg.ledger, ws, repo, self.wc.budget, self.wc.routers)
         ws.prompt.write_text(text, encoding="utf-8")
@@ -1402,7 +1416,6 @@ class Worker:
         exited = datetime.now(UTC)
         took = spoken(time.monotonic() - started)
         where = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
-        gh = GitHub(self.wc.gh, repo.github)
 
         if ended == "lost":
             # Not ours any more: say so on the item, release NOTHING (it is someone else's,
