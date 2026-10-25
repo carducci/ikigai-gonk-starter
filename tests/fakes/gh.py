@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """A stub `gh` for the worker's tests: just the calls the worker and the fake agent make.
 
-    gh.py --state <file.json> pr create --head <branch> --title <t> [--base b] [-R owner/name]
+    gh.py --state <file.json> pr create --head <branch> --title <t> [--base b] [--draft]
+                                        [-R owner/name]
+    gh.py --state <file.json> pr view <n> -R <slug> --json …
     gh.py --state <file.json> pr list -R <slug> --head <branch> --state all --json …
     gh.py --state <file.json> pr checks <n> -R <slug> --json …
     gh.py --state <file.json> run list -R <slug> --commit <sha> --json …
@@ -47,9 +49,26 @@ def main() -> int:
         number = len(state["prs"]) + 1
         url = f"https://github.com/{slug}/pull/{number}"
         state["prs"].append(
-            {"number": number, "url": url, "state": "OPEN", "headRefName": head, "headRefOid": sha}
+            {
+                "number": number,
+                "url": url,
+                "state": "OPEN",
+                "headRefName": head,
+                "headRefOid": sha,
+                "baseRefName": flag(argv, "--base", "main"),
+                "isDraft": "--draft" in argv,
+                "isCrossRepository": False,
+            }
         )
         out = url + "\n"
+    elif argv[:2] == ["pr", "view"]:
+        fields = flag(argv, "--json", "number").split(",")
+        found = [pr for pr in state["prs"] if str(pr["number"]) == argv[2]]
+        if found:
+            out = json.dumps({f: found[0].get(f) for f in fields})
+        else:
+            code = 1
+            err = f"GraphQL: Could not resolve to a PullRequest with the number of {argv[2]}.\n"
     elif argv[:2] == ["pr", "list"]:
         head = flag(argv, "--head")
         # `"merge": {"at": "now" | <ISO time>, "by": <login>}`: someone merges every pull

@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from support import ROOT, gonk, scratch_repo
-from worker_support import DISPATCHER, FakeLedger, Rig, worker
+from worker_support import DISPATCHER, FakeLedger, Rig, git, worker
 
 
 def evidence_comments(item: dict) -> list[str]:
@@ -691,6 +691,176 @@ class TheLoop(unittest.TestCase):
         cwd = Path((self.rig.record / f"cwd-{n}").read_text())
         self.assertEqual(cwd.name, f"item-{n}.2")
         self.assertTrue((cwd.parent / f"item-{n}").is_dir())  # the first, untouched
+
+
+class ContinuingADraftPullRequest(unittest.TestCase):
+    """`Continue draft PR #N` in the brief: the worker stacks its own branch and draft PR on
+    that PR's head branch, and never pushes to the branch it continues."""
+
+    def setUp(self):
+        self.quiet = contextlib.redirect_stdout(io.StringIO())
+        self.quiet.__enter__()
+        self.addCleanup(self.quiet.__exit__, None, None, None)
+        self.make_rig()
+
+    def make_rig(self):
+        self.ledger = FakeLedger()
+        self.rig = Rig(self)
+        # Someone's draft PR #1 in acme/lib, on a branch of theirs one commit past main.
+        seed = self.rig.tmp / "theirs"
+        git("clone", "-q", str(self.rig.origin), str(seed))
+        git("checkout", "-q", "-b", "feature/due-dates", cwd=seed)
+        (seed / "DUE.txt").write_text("their work\n")
+        git("add", "DUE.txt", cwd=seed)
+        git("commit", "-q", "-m", "their work", cwd=seed)
+        git("push", "-q", "origin", "feature/due-dates", cwd=seed)
+        self.theirs = git("rev-parse", "HEAD", cwd=seed).strip()
+        self.draft(state="OPEN")
+
+    def draft(self, **fields):
+        pr = {
+            "number": 1,
+            "url": "https://github.com/acme/lib/pull/1",
+            "headRefName": "feature/due-dates",
+            "headRefOid": "",
+            "baseRefName": "main",
+            "isDraft": True,
+            "isCrossRepository": False,
+            **fields,
+        }
+        self.rig.gh_state.write_text(json.dumps({"slug": "acme/lib", "prs": [pr]}))
+
+    def run_once(self, body: str):
+        n = self.ledger.file("Review fix", ["worker:w1", "repo:lib"], body=body)
+        self.rig.configure()
+        return n, self.rig.worker(self.ledger).run_once()
+
+    def worker_branch(self, n: int) -> str:
+        [branch] = [b for b in self.rig.branches() if b.startswith(f"worker/item-{n}-")]
+        return branch
+
+    def test_the_branch_is_cut_from_the_pull_requests_head(self):
+        self.rig.agent_flags = ["--draft-base", "feature/due-dates"]
+        n, outcome = self.run_once("Continue draft PR #1: answer the review.")
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        branch = self.worker_branch(n)
+        parent = git("rev-parse", f"{branch}~1", cwd=self.rig.origin).strip()
+        self.assertEqual(parent, self.theirs)
+        # Their branch is untouched: the worker pushed only to the branch it made.
+        self.assertEqual(
+            git("rev-parse", "feature/due-dates", cwd=self.rig.origin).strip(), self.theirs
+        )
+
+    def test_the_brief_asks_for_a_draft_against_the_pull_requests_branch(self):
+        self.rig.agent_flags = ["--draft-base", "feature/due-dates"]
+        n, _ = self.run_once("Continue draft PR #1: answer the review.")
+        prompt = self.rig.prompt(n)
+        self.assertIn("made for you from\n   origin/feature/due-dates.", prompt)
+        self.assertIn("`gh pr create --draft --base feature/due-dates`", prompt)
+        self.assertIn("https://github.com/acme/lib/pull/1", prompt)
+
+    def test_the_suggested_command_quotes_the_pull_requests_branch(self):
+        git("push", "-q", "origin", "feature/due-dates:feature/$USER", cwd=self.rig.tmp / "theirs")
+        self.draft(state="OPEN", headRefName="feature/$USER")
+        self.rig.agent_flags = ["--draft-base", "feature/$USER"]
+        n, outcome = self.run_once("Continue draft PR #1: answer the review.")
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        self.assertIn("`gh pr create --draft --base 'feature/$USER'`", self.rig.prompt(n))
+
+    def test_a_branch_named_like_a_placeholder_stays_literal(self):
+        for branch in ("feature/{base}", "feature/{budget}"):
+            with self.subTest(branch=branch):
+                self.make_rig()
+                theirs = self.rig.tmp / "theirs"
+                git("push", "-q", "origin", f"feature/due-dates:{branch}", cwd=theirs)
+                self.draft(state="OPEN", headRefName=branch)
+                n, _ = self.run_once("Continue draft PR #1: answer the review.")
+                prompt = self.rig.prompt(n)
+                self.assertIn(f"made for you from\n   origin/{branch}.", prompt)
+                self.assertIn(f"`gh pr create --draft --base '{branch}'`", prompt)
+
+    def test_the_stacked_pull_request_is_the_evidence(self):
+        self.rig.agent_flags = ["--draft-base", "feature/due-dates"]
+        n, outcome = self.run_once("Continue draft PR #1: answer the review.")
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/2\n"))
+        self.assertIn("stacked on draft PR https://github.com/acme/lib/pull/1", comment)
+        [stacked] = [pr for pr in self.rig.gh()["prs"] if pr["number"] == 2]
+        self.assertEqual(stacked["baseRefName"], "feature/due-dates")
+        self.assertTrue(stacked["isDraft"])
+
+    def test_a_pull_request_that_is_not_stacked_is_not_called_stacked(self):
+        # The agent runs a bare `gh pr create`: no --draft, against main.
+        n, outcome = self.run_once("Continue draft PR #1: answer the review.")
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertNotIn("Its branch is stacked", comment)
+        self.assertIn("https://github.com/acme/lib/pull/2 is not a draft, against main", comment)
+        [listed] = [c for c in self.rig.gh()["calls"] if c[:2] == ["pr", "list"]]
+        self.assertIn("baseRefName", listed[listed.index("--json") + 1])
+
+    def test_the_newest_dispatch_outranks_an_older_router_note(self):
+        # A second open draft, PR #2 on feature/other.
+        git("push", "-q", "origin", "feature/due-dates:feature/other", cwd=self.rig.tmp / "theirs")
+        state = json.loads(self.rig.gh_state.read_text())
+        state["prs"].append(
+            {
+                **state["prs"][0],
+                "number": 2,
+                "url": "https://github.com/acme/lib/pull/2",
+                "headRefName": "feature/other",
+            }
+        )
+        self.rig.gh_state.write_text(json.dumps(state))
+        # A router's note says #1; then the body is edited to say #2 and dispatched again.
+        n = self.ledger.file("Review fix", ["worker:w1", "repo:lib"], body="Answer the review.")
+        self.ledger.add_comment(n, "Continue draft PR #1: answer the review.", author=DISPATCHER)
+        self.ledger.items[n]["body"] = "Continue draft PR #2: answer the review."
+        self.ledger.dispatch(n)
+        self.rig.agent_flags = ["--draft-base", "feature/other"]
+        self.rig.configure()
+        outcome = self.rig.worker(self.ledger).run_once()
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        prompt = self.rig.prompt(n)
+        self.assertIn("made for you from\n   origin/feature/other.", prompt)
+        self.assertIn("continues draft PR https://github.com/acme/lib/pull/2", prompt)
+
+    def test_without_the_words_nothing_changes(self):
+        # Not in the brief, only in a comment by someone who is not a router: data, ignored.
+        n = self.ledger.file("Plain", ["worker:w1", "repo:lib"], body="Fix the due dates.")
+        self.ledger.add_comment(n, "Continue draft PR #1 instead.", author="mallory")
+        self.rig.configure()
+        outcome = self.rig.worker(self.ledger).run_once()
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        self.assertFalse(any(c[:2] == ["pr", "view"] for c in self.rig.gh()["calls"]))
+        parent = git("rev-parse", f"{self.worker_branch(n)}~1", cwd=self.rig.origin).strip()
+        self.assertEqual(parent, git("rev-parse", "main", cwd=self.rig.origin).strip())
+        prompt = self.rig.prompt(n)
+        self.assertIn("made for you from\n   origin/main.", prompt)
+        self.assertIn("open ONE pull request against main with `gh pr create`,", prompt)
+
+    def test_a_closed_merged_or_foreign_pull_request_is_refused_before_starting(self):
+        cases = [
+            ({"state": "CLOSED"}, "#1", "is closed"),
+            ({"state": "MERGED"}, "#1", "is merged"),
+            ({"state": "OPEN", "isCrossRepository": True}, "#1", "not in acme/lib"),
+            ({"state": "OPEN"}, "acme/other#1", "not in acme/lib"),
+            ({"state": "OPEN"}, "#9", "could not be read in acme/lib"),
+        ]
+        for fields, ref, says in cases:
+            with self.subTest(ref=ref, fields=fields):
+                self.make_rig()  # each case its own: a refused item is not taken twice
+                self.draft(**fields)
+                n, outcome = self.run_once(f"Continue draft PR {ref}: answer the review.")
+                self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+                self.assertFalse((self.rig.record / f"started-{n}").exists())
+                item = self.ledger.items[n]
+                self.assertIsNone(item["claim"])
+                self.assertEqual(evidence_comments(item), [])
+                [note] = [c["text"] for c in self.ledger.human_comments(n)]
+                self.assertIn("without starting", note)
+                self.assertIn(says, note)
 
 
 class ShortSha(unittest.TestCase):
