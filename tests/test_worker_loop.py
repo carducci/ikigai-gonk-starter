@@ -759,6 +759,14 @@ class ContinuingADraftPullRequest(unittest.TestCase):
         self.assertIn("`gh pr create --draft --base feature/due-dates`", prompt)
         self.assertIn("https://github.com/acme/lib/pull/1", prompt)
 
+    def test_the_suggested_command_quotes_the_pull_requests_branch(self):
+        git("push", "-q", "origin", "feature/due-dates:feature/$USER", cwd=self.rig.tmp / "theirs")
+        self.draft(state="OPEN", headRefName="feature/$USER")
+        self.rig.agent_flags = ["--draft-base", "feature/$USER"]
+        n, outcome = self.run_once("Continue draft PR #1: answer the review.")
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        self.assertIn("`gh pr create --draft --base 'feature/$USER'`", self.rig.prompt(n))
+
     def test_the_stacked_pull_request_is_the_evidence(self):
         self.rig.agent_flags = ["--draft-base", "feature/due-dates"]
         n, outcome = self.run_once("Continue draft PR #1: answer the review.")
