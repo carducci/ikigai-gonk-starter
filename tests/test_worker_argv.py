@@ -53,7 +53,7 @@ class ArgvRule(unittest.TestCase):
             '["", "{prompt}"]',
             '[" ", "{prompt}"]',
             '["codex", "{prompt}\\u0000"]',
-            '"  {prompt}"',
+            '" "',
         ]:
             self.refused("[agent] command", agent=f"command = {bad}")
         wc = self.load(agent='command = ["codex", "", " ", "{prompt}"]')

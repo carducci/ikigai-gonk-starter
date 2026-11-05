@@ -502,6 +502,7 @@ def _run(args, make_ikigai, home: Path | None, worker, gonk) -> int:
         raise Refused(f"--invite {args.invite!r} is not an invite id")
     if not args.code or any(c.isspace() for c in args.code):
         raise Refused("--code is the pairing code the invite printed, with no spaces")
+    max_wait = worker.seconds(args.max_wait, "--max-wait", zero_ok=True)
     url, pin = door_url(args.door), normal_pin(args.pin)
     agents = worker.agents_list(args.agents)
     repo = Path(args.repo).resolve() if args.repo else gonk.find_repo(Path.cwd())
@@ -538,7 +539,6 @@ def _run(args, make_ikigai, home: Path | None, worker, gonk) -> int:
         print(f"request  posted as {entry}; the controller approves it")
 
     delay, waited = FIRST_DELAY, 0.0
-    max_wait = worker.seconds(args.max_wait, "--max-wait")
     while True:
         live, why = poll(ikigai, fingerprint)
         if live is not None:

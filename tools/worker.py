@@ -108,6 +108,23 @@ def seconds(text: str, what: str, zero_ok: bool = False) -> int:
     return total
 
 
+def check_argv(argv, where: str, key: str) -> list[str]:
+    """One rule for every argv list: not empty, a program that is not blank, no NUL anywhere.
+    Every other element is passed as written, empty or blank, because it runs."""
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(a, str) for a in argv)
+        or not argv[0].strip()
+        or any("\0" in a for a in argv)
+    ):
+        raise gonk.ConfigError(
+            f"{where}: {key} is an argv list: not empty, its program (the first element) not "
+            "blank, no element holding NUL"
+        )
+    return argv
+
+
 def spoken(total: float) -> str:
     total = int(total)
     h, rest = divmod(total, 3600)
@@ -228,8 +245,8 @@ def load_usage(u, where: str, command: list[str]) -> dict:
     cmd = u.get("command")
     if isinstance(cmd, str):
         cmd = shlex.split(cmd)
-    if cmd is not None and (not cmd or not all(isinstance(c, str) for c in cmd)):
-        raise gonk.ConfigError(f"{where}: [usage] command is a command line that prints JSON")
+    if cmd is not None:
+        check_argv(cmd, where, "[usage] command")
     threshold = u.get("threshold", worker_usage.DEFAULT_THRESHOLD)
     if (
         isinstance(threshold, bool)
@@ -305,11 +322,12 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         command = agent.get("command")
         if isinstance(command, str):
             command = shlex.split(command)
-    if not command or not all(isinstance(c, str) for c in command):
+    if not isinstance(command, list):
         raise gonk.ConfigError(
             f'{where}: [agent] needs `preset = "claude"` (or codex, hermes, hermes-profile) '
             'or `command = ["…", "{prompt}"]`'
         )
+    check_argv(command, where, "[agent] command")
     if not any("{prompt}" in c or "{prompt_file}" in c for c in command):
         raise gonk.ConfigError(
             f"{where}: the agent's command names neither {{prompt}} nor {{prompt_file}}, so "
@@ -322,7 +340,8 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         )
 
     gh = t.get("gh", "gh")
-    gh = shlex.split(gh) if isinstance(gh, str) else list(gh)
+    gh = shlex.split(gh) if isinstance(gh, str) else gh
+    check_argv(gh, where, "gh")
 
     repos = {}
     for name, r in (t.get("repos") or {}).items():
@@ -343,16 +362,12 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         if not GITHUB_SLUG.match(slug):
             raise gonk.ConfigError(f"{where}: [repos.{name}] github = {slug!r} is not owner/name")
         prepare = r.get("prepare", [])
-        if not isinstance(prepare, list) or not all(
-            isinstance(step, list)
-            and step
-            and all(isinstance(a, str) and a.strip() and "\0" not in a for a in step)
-            for step in prepare
-        ):
+        if not isinstance(prepare, list):
             raise gonk.ConfigError(
-                f"{where}: [repos.{name}] prepare is a list of argv lists, none of its "
-                'elements empty, blank or holding NUL: [["npm", "ci"]]'
+                f'{where}: [repos.{name}] prepare is a list of argv lists: [["npm", "ci"]]'
             )
+        for step in prepare:
+            check_argv(step, where, f"[repos.{name}] prepare")
         timeout = seconds(
             str(r.get("prepare_timeout", "15m")), f"{where}: [repos.{name}] prepare_timeout"
         )
