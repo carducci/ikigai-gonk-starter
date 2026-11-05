@@ -261,6 +261,45 @@ class Onboarding(unittest.TestCase):
         self.assertEqual(self.door.says, [])
         self.assertFalse((self.identity / "onboard.json").exists())
 
+    def refused_gonk(self, *flags: str, name: str, once: bool = True):
+        self.door.grants = None if once else self.worker_grants()
+        code, out = self.onboard(*(["--once"] if once else []), *flags)
+        self.assertEqual(code, onboard.CONFIG, out)
+        self.assertIn(name, out)
+        self.assertEqual(self.door.says, [], "a refused argument left a request behind")
+        self.assertFalse((self.identity / "onboard.json").exists())
+        return out
+
+    def test_a_bad_gonk_door_is_refused_by_its_name_before_anything_is_posted(self):
+        for once in (True, False):
+            out = self.refused_gonk(
+                "--gonk", "not a door", "--gonk-pin", GONK_FP, name="--gonk 'not a door'", once=once
+            )
+            self.assertNotIn("--door", out)
+
+    def test_a_bad_gonk_pin_is_refused_by_its_name_before_anything_is_posted(self):
+        out = self.refused_gonk(
+            "--gonk", "gonk.example.org:1062", "--gonk-pin", "nope", name="--gonk-pin 'nope'"
+        )
+        self.assertNotIn("--pin 'nope'", out)
+
+    def test_a_wrong_gonk_certificate_is_refused_before_anything_is_posted(self):
+        self.refused_gonk(
+            "--gonk",
+            "gonk.example.org:1062",
+            "--gonk-pin",
+            GONK_FP,
+            "--gonk-server-cert",
+            str(self.files / "door.crt"),
+            name="is not gonk's certificate",
+        )
+
+    def test_a_missing_gonk_certificate_names_the_gonk_flags_before_posting(self):
+        out = self.refused_gonk(
+            "--gonk", "gonk.example.org:1062", "--gonk-pin", GONK_FP, name="--gonk-server-cert"
+        )
+        self.assertIn("--gonk-pin", out)
+
     # -- on an entitlement
 
     def worker_grants(self):
