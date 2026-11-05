@@ -125,6 +125,16 @@ def check_argv(argv, where: str, key: str) -> list[str]:
     return argv
 
 
+def check_text(value, where: str, key: str, blank_ok: bool = True) -> str:
+    """A configuration string that reaches a subprocess, git, gh or a path: a string with no NUL
+    (and not blank when it would be a program)."""
+    if not isinstance(value, str) or "\0" in value or (not blank_ok and not value.strip()):
+        raise gonk.ConfigError(
+            f"{where}: {key} is a string with no NUL" + ("" if blank_ok else ", not blank")
+        )
+    return value
+
+
 def spoken(total: float) -> str:
     total = int(total)
     h, rest = divmod(total, 3600)
@@ -334,9 +344,16 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
             "the agent would never see the item"
         )
     profile = agent.get("profile")
+    if profile is not None:
+        check_text(profile, where, "[agent] profile")
     if any("{profile}" in c for c in command) and not profile:
         raise gonk.ConfigError(
             f"{where}: the agent's command names {{profile}}: set [agent] profile"
+        )
+    if profile and not command[0].replace("{profile}", profile).strip():
+        raise gonk.ConfigError(
+            f"{where}: [agent] profile is the agent's program (the first element of its "
+            "command) and is blank"
         )
 
     gh = t.get("gh", "gh")
@@ -350,6 +367,8 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         remote = r.get("remote")
         if not remote:
             raise gonk.ConfigError(f'{where}: [repos.{name}] needs remote = "<git URL>"')
+        check_text(remote, where, f"[repos.{name}] remote")
+        base = check_text(r.get("base", "main"), where, f"[repos.{name}] base", blank_ok=False)
         slug = r.get("github")
         if not slug:
             m = GITHUB_REMOTE.search(remote)
@@ -371,7 +390,7 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         timeout = seconds(
             str(r.get("prepare_timeout", "15m")), f"{where}: [repos.{name}] prepare_timeout"
         )
-        repos[name] = Repo(name, remote, slug, r.get("base", "main"), prepare, timeout)
+        repos[name] = Repo(name, remote, slug, base, prepare, timeout)
     if not repos:
         raise gonk.ConfigError(
             f"{where}: no [repos.<name>]: name each repository this worker may work in, as its "
@@ -388,11 +407,14 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
     state_dir = cfg.repo / ".gonk" / "state" / "worker"
     loop_dir = state_dir / loop if loop else state_dir
     stop = t.get("stop_file")
+    if stop is not None:
+        check_text(stop, where, "stop_file")
+    work_root_text = check_text(t.get("work_root", "~/work"), where, "work_root")
     return WorkerConfig(
         labels=labels,
         without=without,
         routers=routers,
-        work_root=str(t.get("work_root", "~/work")),
+        work_root=work_root_text,
         lease=lease,
         renew_every=renew,
         poll=seconds(str(t.get("poll", "60s")), "poll"),
