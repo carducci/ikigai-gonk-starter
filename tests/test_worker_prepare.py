@@ -66,8 +66,8 @@ class PrepareConfiguration(unittest.TestCase):
         for bad in [
             'prepare = [["a\\u0000b"]]',
             'prepare = [[" "]]',
-            'prepare = [["npm", "\\t\\n"]]',
-            'prepare = [["npm", ""]]',
+            'prepare = [["npm", "a\\u0000"]]',
+            'prepare = [[""]]',
         ]:
             with self.assertRaises(gonk.ConfigError, msg=bad) as ctx:
                 self.load(bad)

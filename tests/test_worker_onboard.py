@@ -250,6 +250,17 @@ class Onboarding(unittest.TestCase):
         self.assertTrue(all(s <= onboard.MAX_DELAY for s in self.sleeps))
         self.assertGreaterEqual(sum(self.sleeps), 20 * 60)
 
+    def test_max_wait_zero_looks_once_as_once_does(self):
+        code, out = self.onboard("--max-wait", "0s")
+        self.assertEqual(code, onboard.NOT_YET, out)
+        self.assertEqual(len(self.door.says), 1)
+
+    def test_a_refused_max_wait_posts_nothing(self):
+        code, out = self.onboard("--max-wait", "soon")
+        self.assertEqual(code, onboard.CONFIG, out)
+        self.assertEqual(self.door.says, [])
+        self.assertFalse((self.identity / "onboard.json").exists())
+
     # -- on an entitlement
 
     def worker_grants(self):
