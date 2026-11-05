@@ -75,7 +75,7 @@ class ArgvRule(unittest.TestCase):
         cmd = 'command = ["hermes", "--profile", "{profile}", "-z", "{prompt}"]'
         for bad in ['"a\\u0000b"', "5", '"x\\u0000"']:
             self.refused("[agent] profile", agent=f"{cmd}\nprofile = {bad}")
-        wc = self.load(agent=f"{cmd}\nprofile = \" \"")  # an argument runs as written
+        wc = self.load(agent=f'{cmd}\nprofile = " "')  # an argument runs as written
         self.assertEqual(wc.profile, " ")
         program = 'command = ["{profile}", "{prompt}"]'
         for bad in ['" "', '"\\u00a0"']:

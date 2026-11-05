@@ -457,7 +457,8 @@ def check_gonk_args(args, identity: Path, gonk) -> None:
         return
     door_url(args.gonk, "--gonk")
     pin = normal_pin(args.gonk_pin or "", "--gonk-pin")
-    pin_server(identity / "gonk", args.gonk_server_cert, pin, gonk, False, "gonk", GONK_FLAGS, False)
+    certs = identity / "gonk"
+    pin_server(certs, args.gonk_server_cert, pin, gonk, False, "gonk", GONK_FLAGS, write=False)
 
 
 def write_gonk_target(gonk, repo: Path, identity: Path, args, name: str, w: Writer) -> bool:
