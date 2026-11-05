@@ -34,6 +34,37 @@ class Durations(unittest.TestCase):
             with self.assertRaises(gonk.ConfigError, msg=bad):
                 worker.seconds(bad, "x")
 
+    def test_a_zero_duration_is_refused_unless_zero_is_asked_for(self):
+        for zero in ["0s", "0m", "PT0S", "P0D", "P0DT0H0M0S"]:
+            with self.assertRaises(gonk.ConfigError, msg=zero):
+                worker.seconds(zero, "x")
+            self.assertEqual(worker.seconds(zero, "x", zero_ok=True), 0, zero)
+
+
+class ZeroDurationKeys(unittest.TestCase):
+    def setUp(self):
+        self.rig = Rig(self)
+
+    def load(self, extra: str):
+        path = self.rig.checkout / ".gonk" / "worker.toml"
+        path.write_text(
+            f'routers = {json.dumps([DISPATCHER])}\nlabels = ["worker:w1"]\n{extra}\n'
+            '[agent]\npreset = "codex"\n[repos.lib]\nremote = "https://github.com/acme/lib.git"\n'
+        )
+        return worker.load_worker(gonk.load(self.rig.checkout))
+
+    def test_a_zero_in_any_duration_key_is_refused(self):
+        for key in ["budget", "lease", "poll", "ci_poll", "grace", "renew_every"]:
+            with self.assertRaises(gonk.ConfigError, msg=key):
+                self.load(f'{key} = "0s"')
+
+    def test_a_zero_usage_interval_is_refused(self):
+        with self.assertRaises(gonk.ConfigError):
+            self.load('[usage]\ncommand = "true"\nevery = "0s"\n')
+
+    def test_zero_ci_wait_means_do_not_wait(self):
+        self.assertEqual(self.load('ci_wait = "0s"').ci_wait, 0)
+
 
 class TheWorkRoot(unittest.TestCase):
     def setUp(self):

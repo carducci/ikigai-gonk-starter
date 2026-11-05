@@ -51,6 +51,28 @@ class PrepareConfiguration(unittest.TestCase):
             with self.assertRaises(gonk.ConfigError, msg=bad):
                 self.load(bad)
 
+    def test_a_zero_timeout_is_refused_naming_the_repository(self):
+        for bad in ['prepare_timeout = "0s"', 'prepare_timeout = "PT0S"', 'prepare_timeout = "0m"']:
+            with self.assertRaises(gonk.ConfigError, msg=bad) as ctx:
+                self.load(bad)
+            self.assertIn("[repos.lib]", str(ctx.exception), bad)
+
+    def test_an_integer_timeout_names_its_repository(self):
+        with self.assertRaises(gonk.ConfigError) as ctx:
+            self.load("prepare_timeout = 900")
+        self.assertIn("[repos.lib]", str(ctx.exception))
+
+    def test_an_argv_element_that_cannot_run_is_refused_naming_the_repository(self):
+        for bad in [
+            'prepare = [["a\\u0000b"]]',
+            'prepare = [[" "]]',
+            'prepare = [["npm", "\\t\\n"]]',
+            'prepare = [["npm", ""]]',
+        ]:
+            with self.assertRaises(gonk.ConfigError, msg=bad) as ctx:
+                self.load(bad)
+            self.assertIn("[repos.lib]", str(ctx.exception), bad)
+
 
 class PrepareSteps(unittest.TestCase):
     def setUp(self):
