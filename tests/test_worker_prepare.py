@@ -27,7 +27,7 @@ class PrepareConfiguration(unittest.TestCase):
     def load(self, extra: str):
         path = self.rig.checkout / ".gonk" / "worker.toml"
         path.write_text(
-            f"routers = {json.dumps([DISPATCHER])}\nlabels = [\"worker:w1\"]\n"
+            f'routers = {json.dumps([DISPATCHER])}\nlabels = ["worker:w1"]\n'
             f'[agent]\npreset = "codex"\n{REPO}{extra}\n'
         )
         return worker.load_worker(gonk.load(self.rig.checkout))
