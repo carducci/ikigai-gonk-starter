@@ -71,6 +71,44 @@ class ArgvRule(unittest.TestCase):
         wc = self.load(tail='[usage]\ncommand = ["usage", ""]')
         self.assertEqual(wc.usage["command"], ["usage", ""])
 
+    def test_profile_obeys_the_argv_rule_after_substitution(self):
+        cmd = 'command = ["hermes", "--profile", "{profile}", "-z", "{prompt}"]'
+        for bad in ['"a\\u0000b"', "5", '"x\\u0000"']:
+            self.refused("[agent] profile", agent=f"{cmd}\nprofile = {bad}")
+        wc = self.load(agent=f"{cmd}\nprofile = \" \"")  # an argument runs as written
+        self.assertEqual(wc.profile, " ")
+        program = 'command = ["{profile}", "{prompt}"]'
+        for bad in ['" "', '"\\u00a0"']:
+            self.refused("[agent] profile", agent=f"{program}\nprofile = {bad}")
+        self.assertEqual(self.load(agent=f'{program}\nprofile = "p"').profile, "p")
+        # a profile no command names is still a string without NUL
+        self.refused("[agent] profile", agent='preset = "codex"\nprofile = "a\\u0000b"')
+
+    def test_remote_and_base_hold_no_nul_and_are_strings(self):
+        for key, bad in [
+            ("remote", '"https://github.com/acme/lib.git\\u0000"'),
+            ("remote", "5"),
+            ("base", '"ma\\u0000in"'),
+            ("base", "5"),
+            ("base", '""'),
+        ]:
+            tail = f'[repos.lib]\nremote = "https://github.com/acme/lib.git"\n{key} = {bad}\n'
+            if key == "remote":
+                tail = f'[repos.lib]\n{key} = {bad}\ngithub = "acme/lib"\n'
+            path = self.rig.checkout / ".gonk" / "worker.toml"
+            path.write_text(
+                f'routers = {json.dumps([DISPATCHER])}\nlabels = ["worker:w1"]\n'
+                f'[agent]\npreset = "codex"\n\n{tail}'
+            )
+            with self.assertRaises(gonk.ConfigError, msg=f"{key} = {bad}") as ctx:
+                worker.load_worker(gonk.load(self.rig.checkout))
+            self.assertIn(f"[repos.lib] {key}", str(ctx.exception))
+            self.assertIn("worker.toml", str(ctx.exception))
+
+    def test_paths_hold_no_nul(self):
+        self.refused("work_root", top='work_root = "~/a\\u0000b"')
+        self.refused("stop_file", top='stop_file = "/tmp/a\\u0000b"')
+
 
 if __name__ == "__main__":
     unittest.main()
