@@ -108,12 +108,12 @@ def request_turtle(invite: str, certificate_pem: str, fingerprint: str, proof_he
     )
 
 
-def normal_pin(text: str) -> str:
+def normal_pin(text: str, flag: str = "--pin") -> str:
     """A SHA-256 fingerprint as an operator may paste it (colons, upper case) in the one form
     every tool compares: lowercase hex, no separators."""
     pin = text.replace(":", "").strip().lower()
     if not HEX64.match(pin):
-        raise Refused(f"--pin {text!r} is not a SHA-256 fingerprint (64 hex digits)")
+        raise Refused(f"{flag} {text!r} is not a SHA-256 fingerprint (64 hex digits)")
     return pin
 
 
@@ -138,10 +138,10 @@ class Door:
         return f"override {LAYER_PREFIXES}={self.url} {self.cert_dir}"
 
 
-def door_url(text: str) -> str:
+def door_url(text: str, flag: str = "--door") -> str:
     m = DOOR_SHAPE.match(text.strip())
     if not m or not 0 < int(m.group(2)) < 65536:
-        raise Refused(f"--door {text!r} is not HOST:PORT (or quic://HOST:PORT)")
+        raise Refused(f"{flag} {text!r} is not HOST:PORT (or quic://HOST:PORT)")
     return f"quic://{m.group(1)}:{m.group(2)}"
 
 
@@ -198,9 +198,19 @@ def ensure_identity(identity: Path, gonk, make_cert) -> tuple[str, str]:
         raise Refused(f"{crt}: {e}") from e
 
 
-def pin_server(identity: Path, source: str | None, pin: str, gonk, force: bool, what: str) -> None:
+def pin_server(
+    identity: Path,
+    source: str | None,
+    pin: str,
+    gonk,
+    force: bool,
+    what: str,
+    flags: tuple[str, str] = ("--server-cert", "--pin"),
+    write: bool = True,
+) -> None:
     """The door's server certificate in `identity/server.crt`, refused unless it hashes to
-    `pin`: from `source` when given, else the one a run before kept."""
+    `pin`: from `source` when given, else the one a run before kept. With `write` false it only
+    checks and touches nothing. `flags` are the operator's names for the file and the pin."""
     target = identity / "server.crt"
     if source:
         pem = Path(source).expanduser().read_text(encoding="utf-8")
@@ -208,8 +218,8 @@ def pin_server(identity: Path, source: str | None, pin: str, gonk, force: bool, 
         pem = target.read_text(encoding="utf-8")
     else:
         raise Refused(
-            f"no server certificate for {what}: pass --server-cert with the file the invite came "
-            f"with; it is checked against --pin before anything is sent"
+            f"no server certificate for {what}: pass {flags[0]} with the file the invite came "
+            f"with; it is checked against {flags[1]} before anything is sent"
         )
     try:
         got = gonk.cert_fingerprint(pem)
@@ -220,6 +230,8 @@ def pin_server(identity: Path, source: str | None, pin: str, gonk, force: bool, 
             f"{source or target} is not {what}'s certificate: its SHA-256 is {got}, the pin "
             f"is {pin}. Nothing was sent. Ask the controller for the right file"
         )
+    if not write:
+        return
     if source:
         if target.exists() and target.read_text(encoding="utf-8") != pem and not force:
             raise Refused(f"{target} holds another certificate; --force replaces it")
@@ -436,6 +448,18 @@ def write_worker(worker, repo: Path, name: str, agents: list[str], e, w: Writer)
         print("note     the entitlement names no routers: set `routers` in each before `run`")
 
 
+GONK_FLAGS = ("--gonk-server-cert", "--gonk-pin")
+
+
+def check_gonk_args(args, identity: Path, gonk) -> None:
+    """Refuse a bad --gonk, --gonk-pin or --gonk-server-cert before anything is posted."""
+    if not args.gonk:
+        return
+    door_url(args.gonk, "--gonk")
+    pin = normal_pin(args.gonk_pin or "", "--gonk-pin")
+    pin_server(identity / "gonk", args.gonk_server_cert, pin, gonk, False, "gonk", GONK_FLAGS, False)
+
+
 def write_gonk_target(gonk, repo: Path, identity: Path, args, name: str, w: Writer) -> bool:
     """`.gonk/local.toml` for gonk over QUIC, with a cert set of its own: gonk's pinned
     server.crt beside LINKS to this node's client pair (one key, never copied)."""
@@ -446,10 +470,11 @@ def write_gonk_target(gonk, repo: Path, identity: Path, args, name: str, w: Writ
             f"--quic … --cert-dir {identity / 'gonk'}`"
         )
         return False
-    url = door_url(args.gonk)
+    url = door_url(args.gonk, "--gonk")
     certs = identity / "gonk"
     certs.mkdir(parents=True, exist_ok=True)
-    pin_server(certs, args.gonk_server_cert, normal_pin(args.gonk_pin or ""), gonk, w.force, "gonk")
+    pin = normal_pin(args.gonk_pin or "", "--gonk-pin")
+    pin_server(certs, args.gonk_server_cert, pin, gonk, w.force, "gonk", GONK_FLAGS)
     for part in ("client.crt", "client.key"):
         if not (certs / part).is_symlink():
             if (certs / part).exists():
@@ -509,6 +534,7 @@ def _run(args, make_ikigai, home: Path | None, worker, gonk) -> int:
     identity = Path(args.cert_dir).expanduser() if args.cert_dir else None
     identity = (identity or home / ".ikigai" / "onboard" / name).resolve()
 
+    check_gonk_args(args, identity, gonk)
     pem, fingerprint = ensure_identity(identity, gonk, make_certificate)
     print(f"         fingerprint {fingerprint}")
     pin_server(identity, args.server_cert, pin, gonk, args.force, "the door")
