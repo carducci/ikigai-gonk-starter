@@ -876,31 +876,52 @@ def exclude_state(path: Path) -> None:
         exclude.write_text(text + sep + "/.gonk/state/\n", encoding="utf-8")
 
 
-def run_prepare(repo: Repo, ws: Workspace) -> str | None:
+def run_prepare(
+    repo: Repo, ws: Workspace, shutdown: threading.Event, beat: Heartbeat, grace: int
+) -> tuple[str, str] | None:
     """Run the repository's prepare steps in the worktree, in order, with the loop's own
-    environment, each under `prepare_timeout`. None when all succeed; else which step failed
-    and the last 20 lines of its output, so a prepare failure is told from an agent's."""
+    environment, each under `prepare_timeout`. Each step runs as the agent does: in a process
+    group of its own, stopped with its whole group, and watched every quarter second for a lost
+    claim and a shutdown. None when all succeed; else (`failed`, `lost` or `stopped`, and which
+    step and the last 20 lines of its output), so a prepare failure is told from an agent's."""
     for step in repo.prepare:
         name = shlex.join(step)
         with tempfile.TemporaryFile() as out:  # a file, not a pipe: a stray child cannot hang us
+            kind, problem = "failed", None
             try:
-                done = subprocess.run(
+                proc = subprocess.Popen(
                     step,
                     cwd=ws.path,
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=subprocess.STDOUT,
-                    timeout=repo.prepare_timeout,
+                    start_new_session=True,
                 )
-                problem = None if done.returncode == 0 else f"exited {done.returncode}"
-            except subprocess.TimeoutExpired:
-                problem = f"timed out after {spoken(repo.prepare_timeout)}"
             except OSError as e:
                 problem = f"did not start: {e}"
+            else:
+                deadline = time.monotonic() + repo.prepare_timeout
+                while True:
+                    try:
+                        code = proc.wait(timeout=0.25)
+                        problem = None if code == 0 else f"exited {code}"
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if beat.lost.is_set():
+                        kind, problem = "lost", f"was stopped, the claim was lost: {beat.why}"
+                    elif shutdown.is_set():
+                        kind, problem = "stopped", "was stopped, the worker was stopped"
+                    elif time.monotonic() >= deadline:
+                        problem = f"timed out after {spoken(repo.prepare_timeout)}"
+                    else:
+                        continue
+                    stop_process(proc, grace)
+                    break
             if problem:
                 out.seek(0)
                 tail = out.read().decode("utf-8", "replace").splitlines()[-20:]
-                return f"prepare step `{name}` {problem}; last output:\n" + "\n".join(tail)
+                return kind, f"prepare step `{name}` {problem}; last output:\n" + "\n".join(tail)
     return None
 
 
@@ -1461,14 +1482,20 @@ class Worker:
                 return Outcome(NOT_HANDED_BACK, note)
         start = stacked_on["headRefName"] if stacked_on else None
         ws = make_workspace(self.root, repo, number, start)
-        failed = run_prepare(repo, ws)
-        if failed:
+        prepared = run_prepare(repo, ws, self.shutdown, beat, self.wc.grace)
+        if prepared:
+            kind, failed = prepared
             where = f"the worktree is kept at {ws.path} (branch {ws.branch})"
             note = (
                 f"gonk worker `{holder}` hands {display} back without evidence: {failed}. "
                 f"The agent never started; {where}."
             )
-            self.release_if_ours(number, note)
+            if kind == "lost":
+                # Not ours any more: say so, release nothing, as for an agent that lost it.
+                gonk.fire("worker-claim-lost", "refusal", self.cfg.repo)
+                self.ledger.comment(number, note)
+            else:
+                self.release_if_ours(number, note)
             return Outcome(NOT_HANDED_BACK, note)
         text = brief(item, self.cfg.ledger, ws, repo, self.wc.budget, self.wc.routers, stacked_on)
         ws.prompt.write_text(text, encoding="utf-8")
