@@ -80,3 +80,7 @@ preset = "claude"
 remote = "https://github.com/acme/library.git"
 # github = "acme/library"   # owner/name for gh; read from a github.com remote when omitted
 # base = "main"             # the branch each worktree starts from (origin/<base>)
+# prepare = [["git", "submodule", "update", "--init"], ["npm", "ci"]]
+#   argv lists run in order in the worktree before the agent, with the loop's own environment.
+#   A step that fails or times out hands the item back without evidence, naming the step.
+# prepare_timeout = "15m"   # for each step
