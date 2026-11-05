@@ -89,16 +89,23 @@ XSD_DURATION = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?
 UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
-def seconds(text: str, what: str) -> int:
-    """`90s`, `30m`, `2h`, `1d` or an xsd:duration (`PT30M`), in seconds."""
+def seconds(text: str, what: str, zero_ok: bool = False) -> int:
+    """`90s`, `30m`, `2h`, `1d` or an xsd:duration (`PT30M`), in seconds. A zero is refused
+    unless `zero_ok`: a budget, lease or timeout of nothing cannot work."""
     m = DURATION.match(text)
+    total = None
     if m:
-        return int(m.group(1)) * UNIT[m.group(2)]
-    m = XSD_DURATION.match(text)
-    if m and text not in ("P", "PT"):
-        d, h, mi, s = (int(g or 0) for g in m.groups())
-        return d * 86400 + h * 3600 + mi * 60 + s
-    raise gonk.ConfigError(f"{what} = {text!r}: `90s`, `30m`, `2h`, `1d` or an xsd:duration")
+        total = int(m.group(1)) * UNIT[m.group(2)]
+    else:
+        m = XSD_DURATION.match(text)
+        if m and text not in ("P", "PT"):
+            d, h, mi, s = (int(g or 0) for g in m.groups())
+            total = d * 86400 + h * 3600 + mi * 60 + s
+    if total is None:
+        raise gonk.ConfigError(f"{what} = {text!r}: `90s`, `30m`, `2h`, `1d` or an xsd:duration")
+    if total == 0 and not zero_ok:
+        raise gonk.ConfigError(f"{what} = {text!r}: a duration above zero")
+    return total
 
 
 def spoken(total: float) -> str:
@@ -337,13 +344,18 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
             raise gonk.ConfigError(f"{where}: [repos.{name}] github = {slug!r} is not owner/name")
         prepare = r.get("prepare", [])
         if not isinstance(prepare, list) or not all(
-            isinstance(step, list) and step and all(isinstance(a, str) and a for a in step)
+            isinstance(step, list)
+            and step
+            and all(isinstance(a, str) and a.strip() and "\0" not in a for a in step)
             for step in prepare
         ):
             raise gonk.ConfigError(
-                f'{where}: [repos.{name}] prepare is a list of argv lists: [["npm", "ci"]]'
+                f"{where}: [repos.{name}] prepare is a list of argv lists, none of its "
+                'elements empty, blank or holding NUL: [["npm", "ci"]]'
             )
-        timeout = seconds(str(r.get("prepare_timeout", "15m")), "prepare_timeout")
+        timeout = seconds(
+            str(r.get("prepare_timeout", "15m")), f"{where}: [repos.{name}] prepare_timeout"
+        )
         repos[name] = Repo(name, remote, slug, r.get("base", "main"), prepare, timeout)
     if not repos:
         raise gonk.ConfigError(
@@ -370,7 +382,7 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         renew_every=renew,
         poll=seconds(str(t.get("poll", "60s")), "poll"),
         budget=seconds(str(t.get("budget", "45m")), "budget"),
-        ci_wait=seconds(str(t.get("ci_wait", "10m")), "ci_wait"),
+        ci_wait=seconds(str(t.get("ci_wait", "10m")), "ci_wait", zero_ok=True),
         ci_poll=seconds(str(t.get("ci_poll", "20s")), "ci_poll"),
         grace=seconds(str(t.get("grace", "10s")), "grace"),
         keep=bool(t.get("keep", False)),
