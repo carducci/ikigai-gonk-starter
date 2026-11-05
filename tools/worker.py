@@ -68,6 +68,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -148,6 +149,8 @@ class Repo:
     remote: str  # what `git clone` takes
     github: str  # owner/name, for gh
     base: str = "main"
+    prepare: list[list[str]] = field(default_factory=list)  # argv lists run in the worktree first
+    prepare_timeout: int = 900  # seconds, for each step
 
 
 @dataclass
@@ -332,7 +335,16 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
             slug = m.group(1)
         if not GITHUB_SLUG.match(slug):
             raise gonk.ConfigError(f"{where}: [repos.{name}] github = {slug!r} is not owner/name")
-        repos[name] = Repo(name, remote, slug, r.get("base", "main"))
+        prepare = r.get("prepare", [])
+        if not isinstance(prepare, list) or not all(
+            isinstance(step, list) and step and all(isinstance(a, str) and a for a in step)
+            for step in prepare
+        ):
+            raise gonk.ConfigError(
+                f'{where}: [repos.{name}] prepare is a list of argv lists: [["npm", "ci"]]'
+            )
+        timeout = seconds(str(r.get("prepare_timeout", "15m")), "prepare_timeout")
+        repos[name] = Repo(name, remote, slug, r.get("base", "main"), prepare, timeout)
     if not repos:
         raise gonk.ConfigError(
             f"{where}: no [repos.<name>]: name each repository this worker may work in, as its "
@@ -862,6 +874,55 @@ def exclude_state(path: Path) -> None:
         exclude.parent.mkdir(parents=True, exist_ok=True)
         sep = "\n" if text and not text.endswith("\n") else ""
         exclude.write_text(text + sep + "/.gonk/state/\n", encoding="utf-8")
+
+
+def run_prepare(
+    repo: Repo, ws: Workspace, shutdown: threading.Event, beat: Heartbeat, grace: int
+) -> tuple[str, str] | None:
+    """Run the repository's prepare steps in the worktree, in order, with the loop's own
+    environment, each under `prepare_timeout`. Each step runs as the agent does: in a process
+    group of its own, stopped with its whole group, and watched every quarter second for a lost
+    claim and a shutdown. None when all succeed; else (`failed`, `lost` or `stopped`, and which
+    step and the last 20 lines of its output), so a prepare failure is told from an agent's."""
+    for step in repo.prepare:
+        name = shlex.join(step)
+        with tempfile.TemporaryFile() as out:  # a file, not a pipe: a stray child cannot hang us
+            kind, problem = "failed", None
+            try:
+                proc = subprocess.Popen(
+                    step,
+                    cwd=ws.path,
+                    stdin=subprocess.DEVNULL,
+                    stdout=out,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            except OSError as e:
+                problem = f"did not start: {e}"
+            else:
+                deadline = time.monotonic() + repo.prepare_timeout
+                while True:
+                    try:
+                        code = proc.wait(timeout=0.25)
+                        problem = None if code == 0 else f"exited {code}"
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if beat.lost.is_set():
+                        kind, problem = "lost", f"was stopped, the claim was lost: {beat.why}"
+                    elif shutdown.is_set():
+                        kind, problem = "stopped", "was stopped, the worker was stopped"
+                    elif time.monotonic() >= deadline:
+                        problem = f"timed out after {spoken(repo.prepare_timeout)}"
+                    else:
+                        continue
+                    stop_process(proc, grace)
+                    break
+            if problem:
+                out.seek(0)
+                tail = out.read().decode("utf-8", "replace").splitlines()[-20:]
+                return kind, f"prepare step `{name}` {problem}; last output:\n" + "\n".join(tail)
+    return None
 
 
 def remove_workspace(ws: Workspace) -> None:
@@ -1421,6 +1482,21 @@ class Worker:
                 return Outcome(NOT_HANDED_BACK, note)
         start = stacked_on["headRefName"] if stacked_on else None
         ws = make_workspace(self.root, repo, number, start)
+        prepared = run_prepare(repo, ws, self.shutdown, beat, self.wc.grace)
+        if prepared:
+            kind, failed = prepared
+            where = f"the worktree is kept at {ws.path} (branch {ws.branch})"
+            note = (
+                f"gonk worker `{holder}` hands {display} back without evidence: {failed}. "
+                f"The agent never started; {where}."
+            )
+            if kind == "lost":
+                # Not ours any more: say so, release nothing, as for an agent that lost it.
+                gonk.fire("worker-claim-lost", "refusal", self.cfg.repo)
+                self.ledger.comment(number, note)
+            else:
+                self.release_if_ours(number, note)
+            return Outcome(NOT_HANDED_BACK, note)
         text = brief(item, self.cfg.ledger, ws, repo, self.wc.budget, self.wc.routers, stacked_on)
         ws.prompt.write_text(text, encoding="utf-8")
         argv = agent_argv(
