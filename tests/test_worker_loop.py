@@ -713,6 +713,13 @@ class TheLoop(unittest.TestCase):
         self.run_once()
         self.assertIn("Correction: fix only the timezone.", self.rig.prompt(n))
 
+    def test_a_nul_in_the_items_text_does_not_reach_the_argv(self):
+        n = self.ledger.file("T\x00t", ["worker:w1", "repo:lib"], body="b\x00c")
+        self.ledger.add_comment(n, "Correction: x\x00y")
+        outcome = self.run_once()
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        self.assertNotIn("\x00", self.rig.prompt(n))
+
     def test_a_second_run_of_one_item_gets_a_fresh_directory(self):
         n = self.ledger.file("Again", ["worker:w1", "repo:lib"])
         self.assertEqual(self.run_once(keep="true").code, worker.HANDED_BACK)
