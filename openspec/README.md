@@ -40,9 +40,15 @@ keyed by the task's IRI, as the Book's sync does.
 - **A task names its model.** After its number a task may carry `[haiku]`, `[sonnet]` or
   `[opus]`, optionally with `repo:<name>`: `- [ ] 1.1 [sonnet repo:other] Do x`. `python3
   tools/gonk.py seed` files the item with `agent:claude-<model>` and `repo:<name>` (default: this
-  repository, from its `origin`, else its folder) and leaves the hint out of the title. `seed`
-  files nothing and names the line when an open task has an unknown model, an unknown or repeated
-  word, a `repo:` name that isn't a repository name, no text after the hint, no title once the
-  hint and citation are removed, or a hint on a `(human: …)` task (`human` in any case, space
-  allowed before the colon). A bracket followed at once by `(` is a Markdown link, not a hint. A
-  checked-off task is never refused; `seed --dry-run` shows each item's labels.
+  repository, the last path segment of `git remote get-url origin`, so `insteadOf` applies, any
+  host or a local path, without `.git` or a trailing `/`; the folder's name only when there is no
+  origin) and leaves the hint out of the title. A seeded item is taken by a loop whose
+  `.gonk/worker*.toml` `labels` include `agent:claude-<model>`; `worker.py init-agents` doesn't
+  write that label today (only `agent:claude`, `agent:codex`, `agent:hermes`), so such a loop's
+  config is written by hand. `seed` files nothing and names the line when an open task has an
+  unknown model, an unknown or repeated word, a `repo:` name that isn't a repository name, no text
+  after the hint, no title once the hint and citation are removed, or a hint on a task with a
+  human note, `(human: …)` or `[human: …]` anywhere in it (`human` in any case, space allowed
+  before an ASCII or fullwidth colon). A bracket followed at once by `(` is a Markdown link, not a
+  hint, unless its text is a model (`[opus](R)`, with or without `repo:…`), which is refused as a
+  typo. A checked-off task is never refused; `seed --dry-run` shows each item's labels.

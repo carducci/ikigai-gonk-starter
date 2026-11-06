@@ -45,6 +45,7 @@ def run_seed(
     changes: list[str] | None = None,
     dry_run: bool = False,
     path: str | None = None,
+    git_config: dict[str, str] | None = None,
 ):
     """Seed a repository whose change `x` has tasks.md `tasks` (and `others`, change -> tasks.md):
     (exit code, appends, error, stdout)."""
@@ -58,6 +59,8 @@ def run_seed(
         if remote:
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
             subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", remote], check=True)
+            for key, value in (git_config or {}).items():
+                subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
         cfg = gonk.Config(repo, "carducci", object(), "h", layout)
         fake = FakeIkigai()
         args = SimpleNamespace(changes=changes or [], dry_run=dry_run)
@@ -316,6 +319,71 @@ class SeedModelHint(unittest.TestCase):
             "- [ ] 1.1 [opus repo:o] A\n- [ ] 1.2 [opus] B\n", remote=None, folder="My Repo"
         )
         self.assertEqual(2, code)
+
+    def test_a_human_note_in_any_position_or_form_refuses_a_hinted_task(self):
+        # Finding 1 of round 1: the note need not end the line, nor use parentheses or `:`.
+        for text in (
+            "[opus] Merge the PRs (human: Michael).",
+            "[opus] (human: Michael) Merge the PRs",
+            "[opus] Merge (human: Michael) for x",
+            "[opus] Merge [human: Michael] (R)",
+            "[opus] Merge (human： Michael)",
+            "[opus] Merge [Human ： Michael]",
+        ):
+            with self.subTest(text=text):
+                code, appended, err = seed(f"- [ ] 4.1 {text}\n")
+                self.assertEqual(2, code)
+                self.assertEqual([], appended)
+                self.assertIn("tasks.md:1", err)
+
+    def test_an_unhinted_human_task_in_any_form_has_no_agent_or_repo_label(self):
+        for text in ("Merge (human： Michael)", "(human: M) Merge", "Merge [human: M] (R)"):
+            with self.subTest(text=text):
+                code, appended, _ = seed(f"- [ ] 4.1 {text}\n")
+                self.assertEqual(0, code)
+                self.assertEqual(["change:x"], labels_of(appended[0][0]))
+
+    def test_the_default_repository_is_the_last_segment_of_any_origin(self):
+        for remote in (
+            "git@github-work:carducci/ikigraph.git",
+            "ssh://git@ssh.github.com:443/carducci/ikigraph.git",
+            "https://gitlab.com/carducci/ikigraph.git",
+            "/srv/git/ikigraph.git",
+            "/srv/git/ikigraph/",
+            "host:ikigraph.git",
+        ):
+            with self.subTest(remote=remote):
+                _, appended, _ = seed("- [ ] 1.1 [opus] T\n", remote=remote, folder="item-1338")
+                self.assertIn("repo:ikigraph", labels_of(appended[0][0]))
+
+    def test_the_origin_is_read_through_insteadof(self):
+        _, appended, _ = seed(
+            "- [ ] 1.1 [opus] T\n",
+            remote="work:thing",
+            folder="item-1338",
+            git_config={"url.https://example.com/carducci/ikigraph.git.insteadOf": "work:thing"},
+        )
+        self.assertIn("repo:ikigraph", labels_of(appended[0][0]))
+
+    def test_a_known_model_followed_at_once_by_a_paren_is_refused(self):
+        for text in (
+            "1.1 [opus](R)",
+            "1.1 [sonnet](x) Add y",
+            "1.1 [haiku repo:other](x) Add y",
+            "1.1 [opus repo:other](R)",
+        ):
+            with self.subTest(text=text):
+                code, appended, err = seed(f"- [ ] {text}\n")
+                self.assertEqual(2, code)
+                self.assertEqual([], appended)
+                self.assertIn("tasks.md:1", err)
+
+    def test_any_other_bracket_paren_stays_a_link(self):
+        for text in ("[README](README.md) Do x", "[opusx](u) Do x", "[opus foo](u) Do x"):
+            with self.subTest(text=text):
+                code, appended, _ = seed(f"- [ ] 1.1 {text}\n")
+                self.assertEqual(0, code)
+                self.assertEqual(["change:x"], labels_of(appended[0][0]))
 
 
 if __name__ == "__main__":
