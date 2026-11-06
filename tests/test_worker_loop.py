@@ -127,6 +127,19 @@ class Configuration(unittest.TestCase):
             with self.assertRaises(gonk.ConfigError, msg=why):
                 self.load(text)
 
+    def test_a_base_that_git_would_take_as_a_ref_is_refused_at_load(self):
+        # `base` becomes `origin/<base>` in `git worktree add`, so an empty, blank or NUL base
+        # (or a name git check-ref-format refuses) must stop at load, naming the key.
+        agent = '[agent]\npreset = "claude"\n'
+        for base in ["", "  ", "a\x00b", "-x", "a..b", "a b", "a~b", "a.lock"]:
+            text = 'labels = ["w"]\n' + agent + self.REPO + f"base = {json.dumps(base)}\n"
+            with self.subTest(base=base):
+                with self.assertRaises(gonk.ConfigError) as refused:
+                    self.load(text)
+                self.assertIn("[repos.lib] base", str(refused.exception))
+        wc = self.load('labels = ["w"]\n' + agent + self.REPO + 'base = "release/1.2"\n')
+        self.assertEqual(wc.repos["lib"].base, "release/1.2")
+
     def test_no_worker_toml_is_a_configuration_error_with_the_fix(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):

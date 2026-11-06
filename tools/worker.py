@@ -331,7 +331,11 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
             slug = m.group(1)
         if not GITHUB_SLUG.match(slug):
             raise gonk.ConfigError(f"{where}: [repos.{name}] github = {slug!r} is not owner/name")
-        repos[name] = Repo(name, remote, slug, r.get("base", "main"))
+        base = r.get("base", "main")
+        problem = base_problem(base, cfg.repo)
+        if problem:
+            raise gonk.ConfigError(f"{where}: [repos.{name}] base: {problem}")
+        repos[name] = Repo(name, remote, slug, base)
     if not repos:
         raise gonk.ConfigError(
             f"{where}: no [repos.<name>]: name each repository this worker may work in, as its "
@@ -373,6 +377,27 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         holder=holder,
         usage=load_usage(t.get("usage", {}), where, command),
     )
+
+
+def base_problem(base, repo: Path) -> str | None:
+    """Why `[repos.<name>] base` cannot be a branch, or None. It becomes `origin/<base>` in
+    `git worktree add`, so git's own rule for a branch name decides; the checks before it are
+    what argv cannot carry (a NUL) or what git would read as an option (a leading '-')."""
+    if not isinstance(base, str):
+        return "is not a string"
+    if not base.strip():
+        return "is empty or blank"
+    if "\x00" in base:
+        return "holds a NUL"
+    if base.startswith("-"):
+        return "starts with '-', which git reads as an option"
+    try:
+        done = git("check-ref-format", "--branch", base, cwd=repo)
+    except OSError as e:
+        return f"cannot be checked: git did not run ({e.strerror})"
+    if done.returncode != 0:
+        return f"{base!r} is not a branch name git accepts"
+    return None
 
 
 def load_routers(value, where: str, repo: Path) -> list[str]:
