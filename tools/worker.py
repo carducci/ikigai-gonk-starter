@@ -21,9 +21,11 @@ What it does with one item, in order:
    DISPATCHED by one of the configured `routers` (`dispatch_problem`: its newest dispatch
    comment by a router names this worker's labels and the item's repository, and pins the
    title and body it still has), is not awaiting its dispatcher (`awaiting_dispatcher`), was
-   not handed back by this worker before, and whose repository has no ACTIVE claim held by
-   anyone (one agent per repository) and no item running on this machine. The dispatch is
-   checked again on the item as read after the claim, and the brief is built from that read.
+   not handed back by this worker before, and whose repository has fewer ACTIVE claims than
+   `max_per_repo` (default 1) among items of its own kind (a review counts only reviews,
+   any other item only non-reviews), and fewer than that many items running on this
+   machine. The dispatch is checked again on the item as read after the claim, and the brief
+   is built from that read.
 2. Claim it with a lease, then renew the lease while it works (the heartbeat). A renewal that
    finds the item held by someone else, released, or closed, or that the ledger refuses, means
    the claim is lost: the agent is stopped and the loss is reported, and nothing is released.
@@ -178,6 +180,7 @@ class WorkerConfig:
     usage: dict = field(default_factory=dict)  # the [usage] table: see tools/worker_usage.py
     loop: str | None = None  # from `worker-<loop>.toml`; None for worker.toml, the one loop
     holder: str | None = None  # overrides .gonk/local.toml's holder for this loop's claims
+    max_per_repo: int = 1  # items of one repository at once, on the ledger and on this machine
 
     def __post_init__(self) -> None:
         self.loop_dir = self.loop_dir or self.state_dir
@@ -194,8 +197,9 @@ WORKER_TOML = Path(".gonk") / "worker.toml"
 # like worker.toml), run by `worker/units/gonk-worker@.service` as `gonk-worker@<loop>`. The
 # loop's name is the file's: it keeps its own record of the items it handed back and its own
 # stop file under `.gonk/state/worker/<loop>/`, and shares with every other loop of the
-# checkout the per-repository locks (so two agents never work one repository at once, and
-# never share a repository's clone under the work root) and the stop file for all of them.
+# checkout the per-repository locks (at most `max_per_repo` items of one repository at once,
+# and one writer at a time on a repository's clone under the work root) and the stop file for
+# all of them.
 LOOP_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 LOOP_TOML = re.compile(r"^worker-(.+)\.toml$")
 
@@ -357,6 +361,13 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         if problem:
             raise gonk.ConfigError(f"{where}: holder: {problem}")
 
+    max_per_repo = t.get("max_per_repo", 1)
+    if isinstance(max_per_repo, bool) or not isinstance(max_per_repo, int) or max_per_repo < 1:
+        raise gonk.ConfigError(
+            f"{where}: max_per_repo = {max_per_repo!r}: a whole number from 1, the items of one "
+            "repository this checkout's loops may work at once"
+        )
+
     loop = loop_name(path)
     state_dir = cfg.repo / ".gonk" / "state" / "worker"
     loop_dir = state_dir / loop if loop else state_dir
@@ -384,6 +395,7 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         global_stop=state_dir / "stop",
         loop=loop,
         holder=holder,
+        max_per_repo=max_per_repo,
         usage=load_usage(t.get("usage", {}), where, command),
     )
 
@@ -707,29 +719,79 @@ class Attempts:
 
 
 class RepoLock:
-    """One item per repository on this machine: an exclusive lock on a file per repository,
-    released when the process ends however it ends."""
+    """Up to `slots` items of one repository on this machine: an exclusive lock on one of
+    `slots` files per repository (`<repo>.lock`, then `<repo>.2.lock`, ...), released when the
+    process ends however it ends. One slot is the lock file every earlier worker took."""
 
-    def __init__(self, state_dir: Path, repo: str) -> None:
-        self.path = state_dir / "locks" / f"{repo}.lock"
+    def __init__(self, state_dir: Path, repo: str, slots: int = 1) -> None:
+        self.paths = [
+            state_dir / "locks" / (f"{repo}.lock" if k == 1 else f"{repo}.{k}.lock")
+            for k in range(1, slots + 1)
+        ]
+        self.path = self.paths[0]
         self.handle = None
 
     def acquire(self) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.path.open("a")
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            handle.close()
-            return False
-        self.handle = handle
-        return True
+        for path in self.paths:
+            handle = path.open("a")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.close()
+                continue
+            self.handle, self.path = handle, path
+            return True
+        return False
 
     def release(self) -> None:
         if self.handle is not None:
             fcntl.flock(self.handle, fcntl.LOCK_UN)
             self.handle.close()
             self.handle = None
+
+
+class CloneLock:
+    """One writer at a time on a repository's clone under the work root (`.source`, its
+    worktree list, its config and exclude file): held while a worktree is set up, prepared and
+    removed, never while the agent runs, so several items of one repository can run at once."""
+
+    def __init__(self, state_dir: Path, repo: str) -> None:
+        self.path = state_dir / "locks" / f"{repo}.clone.lock"
+        self.handle = None
+
+    def acquire(self, timeout: float | None = None) -> bool:
+        """Wait up to `timeout` seconds (forever when None) for the lock."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.path.open("a")
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.handle = handle
+                return True
+            except OSError:
+                if deadline is not None and time.monotonic() >= deadline:
+                    handle.close()
+                    return False
+                time.sleep(0.2)
+
+    def release(self) -> None:
+        if self.handle is not None:
+            fcntl.flock(self.handle, fcntl.LOCK_UN)
+            self.handle.close()
+            self.handle = None
+
+    def __enter__(self) -> CloneLock:
+        if not self.acquire(CLONE_WAIT):
+            raise StepFailed(f"the clone lock {self.path} stayed held for {spoken(CLONE_WAIT)}")
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
+
+
+CLONE_WAIT = 1800  # seconds a worktree's setup waits for another's (a prepare may run 15m a step)
 
 
 # --------------------------------------------------------------------------- the heartbeat
@@ -1365,7 +1427,7 @@ class Worker:
             busy[repo] = self.repo_holder(repo, now, exclude=None)
         if busy[repo]:
             return gonk.sensor("worker-one-agent-per-repository"), (
-                f"repo:{repo} is busy: {busy[repo]} (one agent per repository)"
+                f"repo:{repo} is busy: {busy[repo]} ({self.per_repo()})"
             )
         return None
 
@@ -1377,17 +1439,26 @@ class Worker:
         gonk.fire(control, "refusal", self.cfg.repo)
 
     def repo_holder(self, repo: str, now: datetime, exclude: int | None) -> str | None:
-        """Who holds an ACTIVE claim on an open item of this repository, if anyone."""
+        """Why this repository is full, if it is: `max_per_repo` ACTIVE claims on its open items
+        of this worker's kind (a reviewer counts reviews, any other worker counts the rest)."""
         items, err = self.ledger.items(f"repo:{repo}")
         if items is None:
             return f"its claims could not be read ({err})"
+        mine = "review" in self.wc.labels
+        held = []
         for other in items:
             if other.get("number") == exclude:
                 continue
+            if ("review" in (other.get("labels") or [])) != mine:
+                continue
             holder = active_claim(other, now)
             if holder:
-                return f"{other.get('display')} is claimed by `{holder}`"
-        return None
+                held.append(f"{other.get('display')} is claimed by `{holder}`")
+        return ", ".join(held) if len(held) >= self.wc.max_per_repo else None
+
+    def per_repo(self) -> str:
+        n = self.wc.max_per_repo
+        return "one agent per repository" if n == 1 else f"{n} agents per repository"
 
     # ----------------------------------------------------------------- one item
 
@@ -1406,9 +1477,12 @@ class Worker:
         for control, number in self.skipped:
             self.fire_skip(control, number)
         for item, repo in take:
-            lock = RepoLock(self.wc.state_dir, repo.name)
+            lock = RepoLock(self.wc.state_dir, repo.name, self.wc.max_per_repo)
             if not lock.acquire():
-                log(f"skip {item.get('display')}: repo:{repo.name} has an item running here")
+                log(
+                    f"skip {item.get('display')}: repo:{repo.name} has "
+                    f"{self.wc.max_per_repo} item(s) running here"
+                )
                 self.fire_skip(gonk.sensor("worker-one-agent-per-repository"), item["number"])
                 continue
             try:
@@ -1481,8 +1555,9 @@ class Worker:
                 self.release_if_ours(number, note)
                 return Outcome(NOT_HANDED_BACK, note)
         start = stacked_on["headRefName"] if stacked_on else None
-        ws = make_workspace(self.root, repo, number, start)
-        prepared = run_prepare(repo, ws, self.shutdown, beat, self.wc.grace)
+        with CloneLock(self.wc.state_dir, repo.name):
+            ws = make_workspace(self.root, repo, number, start)
+            prepared = run_prepare(repo, ws, self.shutdown, beat, self.wc.grace)
         if prepared:
             kind, failed = prepared
             where = f"the worktree is kept at {ws.path} (branch {ws.branch})"
@@ -1633,7 +1708,8 @@ class Worker:
             return Outcome(NOT_HANDED_BACK, note, prs=prs)
         released = self.release_if_ours(number, "")
         if removed:
-            remove_workspace(ws)
+            with CloneLock(self.wc.state_dir, repo.name):
+                remove_workspace(ws)
         state = "released" if released else "NOT released (it was no longer this worker's)"
         return Outcome(
             HANDED_BACK, f"handed {display} back with {evidence}; claim {state}", prs=prs
