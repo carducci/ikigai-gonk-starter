@@ -1457,7 +1457,12 @@ class Worker:
         for ranked in doc.get("ranking", []):
             item = ranked["item"]
             display = item.get("display", f"#{item.get('number')}")
-            reason = self.skip_reason(item, now, busy)
+            try:
+                reason = self.skip_reason(item, now, busy)
+            except Exception as e:  # noqa: BLE001  (one bad item must not end the pass)
+                # Skipped for this pass and logged; no sensor names a crashed check.
+                skip.append((display, f"its check raised {type(e).__name__}: {e}"))
+                continue
             if reason:
                 skip.append((display, reason[1]))
                 self.skipped.append((reason[0], item.get("number")))
@@ -1888,7 +1893,10 @@ class Worker:
             if stop is not None:
                 log(f"stopping: {stop} exists (remove it to run again)")
                 return 0
-            outcome = self.run_once()
+            try:
+                outcome = self.run_once()
+            except Exception as e:  # noqa: BLE001  (a pass that raised ends the pass, not the worker)
+                outcome = Outcome(ERROR, f"a pass raised {type(e).__name__}: {e}")
             if outcome.code in (NOTHING, ERROR):
                 if outcome.code == ERROR:
                     log(outcome.summary)
