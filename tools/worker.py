@@ -732,6 +732,49 @@ class RepoLock:
             self.handle = None
 
 
+class CloneLock:
+    """One writer at a time on a repository's clone under the work root (`.source`, its
+    worktree list, its config and exclude file): held while a worktree is set up, prepared and
+    removed, never while the agent runs, so several items of one repository can run at once."""
+
+    def __init__(self, state_dir: Path, repo: str) -> None:
+        self.path = state_dir / "locks" / f"{repo}.clone.lock"
+        self.handle = None
+
+    def acquire(self, timeout: float | None = None) -> bool:
+        """Wait up to `timeout` seconds (forever when None) for the lock."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.path.open("a")
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.handle = handle
+                return True
+            except OSError:
+                if deadline is not None and time.monotonic() >= deadline:
+                    handle.close()
+                    return False
+                time.sleep(0.2)
+
+    def release(self) -> None:
+        if self.handle is not None:
+            fcntl.flock(self.handle, fcntl.LOCK_UN)
+            self.handle.close()
+            self.handle = None
+
+    def __enter__(self) -> CloneLock:
+        if not self.acquire(CLONE_WAIT):
+            raise StepFailed(f"the clone lock {self.path} stayed held for {spoken(CLONE_WAIT)}")
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
+
+
+CLONE_WAIT = 1800  # seconds a worktree's setup waits for another's (a prepare may run 15m a step)
+
+
 # --------------------------------------------------------------------------- the heartbeat
 
 
@@ -1481,8 +1524,9 @@ class Worker:
                 self.release_if_ours(number, note)
                 return Outcome(NOT_HANDED_BACK, note)
         start = stacked_on["headRefName"] if stacked_on else None
-        ws = make_workspace(self.root, repo, number, start)
-        prepared = run_prepare(repo, ws, self.shutdown, beat, self.wc.grace)
+        with CloneLock(self.wc.state_dir, repo.name):
+            ws = make_workspace(self.root, repo, number, start)
+            prepared = run_prepare(repo, ws, self.shutdown, beat, self.wc.grace)
         if prepared:
             kind, failed = prepared
             where = f"the worktree is kept at {ws.path} (branch {ws.branch})"
@@ -1633,7 +1677,8 @@ class Worker:
             return Outcome(NOT_HANDED_BACK, note, prs=prs)
         released = self.release_if_ours(number, "")
         if removed:
-            remove_workspace(ws)
+            with CloneLock(self.wc.state_dir, repo.name):
+                remove_workspace(ws)
         state = "released" if released else "NOT released (it was no longer this worker's)"
         return Outcome(
             HANDED_BACK, f"handed {display} back with {evidence}; claim {state}", prs=prs
