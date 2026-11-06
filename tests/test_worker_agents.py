@@ -336,7 +336,8 @@ class TheHolderOverrideAgainstARealGonk(unittest.TestCase):
         )
 
         # Over QUIC a dispatch may not borrow another principal's name: gonk's door refuses an
-        # `author` shaped like a principal that is not the client's own, which is what makes a
+        # `author` the committer is not, and is not enrolled to act for in the participants graph
+        # (prov:actedOnBehalfOf), nor an import principal (ledger:Importer). That is what makes a
         # dispatch's author worth checking.
         def dispatch(*extra: str) -> tuple[int, str]:
             out = io.StringIO()
