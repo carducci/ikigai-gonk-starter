@@ -22,9 +22,10 @@ What it does with one item, in order:
    comment by a router names this worker's labels and the item's repository, and pins the
    title and body it still has), is not awaiting its dispatcher (`awaiting_dispatcher`), was
    not handed back by this worker before, and whose repository has fewer ACTIVE claims than
-   `max_per_repo` (default 1), and fewer than that many items running on this machine. The
-   dispatch is checked again on the item as read after the claim, and the brief is built from
-   that read.
+   `max_per_repo` (default 1) among items of its own kind (a review counts only reviews,
+   any other item only non-reviews), and fewer than that many items running on this
+   machine. The dispatch is checked again on the item as read after the claim, and the brief
+   is built from that read.
 2. Claim it with a lease, then renew the lease while it works (the heartbeat). A renewal that
    finds the item held by someone else, released, or closed, or that the ledger refuses, means
    the claim is lost: the agent is stopped and the loss is reported, and nothing is released.
@@ -1439,13 +1440,16 @@ class Worker:
 
     def repo_holder(self, repo: str, now: datetime, exclude: int | None) -> str | None:
         """Why this repository is full, if it is: `max_per_repo` ACTIVE claims on its open items
-        ."""
+        of this worker's kind (a reviewer counts reviews, any other worker counts the rest)."""
         items, err = self.ledger.items(f"repo:{repo}")
         if items is None:
             return f"its claims could not be read ({err})"
+        mine = "review" in self.wc.labels
         held = []
         for other in items:
             if other.get("number") == exclude:
+                continue
+            if ("review" in (other.get("labels") or [])) != mine:
                 continue
             holder = active_claim(other, now)
             if holder:

@@ -66,6 +66,26 @@ class MaxPerRepo(unittest.TestCase):
             "`dana` (2 agents per repository)",
         )
 
+    def test_a_review_claim_does_not_fence_a_coder(self):
+        review = self.ledger.file("Review lib", ["repo:lib", "review"])
+        self.ledger.force_claim(review, "reviewer")
+        lib = self.ledger.file("Code lib", ["worker:w1", "repo:lib"])
+        take, _, _ = self.candidates()
+        self.assertEqual([i["number"] for i, _ in take], [lib])
+
+    def test_a_coder_claim_does_not_fence_a_reviewer_but_a_review_claim_does(self):
+        code = self.ledger.file("Code lib", ["repo:lib"])
+        self.ledger.force_claim(code, "coder")
+        lib = self.ledger.file("Review lib", ["worker:w1", "review", "repo:lib"])
+        labels = '["worker:w1", "review"]'
+        take, _, _ = self.candidates(labels=labels)
+        self.assertEqual([i["number"] for i, _ in take], [lib])
+
+        other = self.ledger.file("Another review of lib", ["repo:lib", "review"])
+        self.ledger.force_claim(other, "reviewer-2")
+        take, _, _ = self.candidates(labels=labels)
+        self.assertEqual([i["number"] for i, _ in take], [])
+
     def test_this_machine_runs_up_to_max_per_repo_items_of_a_repository(self):
         self.rig.configure(max_per_repo="2")
         w = self.rig.worker(self.ledger)
