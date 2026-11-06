@@ -87,7 +87,7 @@ ctl:worker-dispatched-by-a-router a harness:Control ;
     harness:stage harness:runtime ; harness:category harness:authoritySafety ;
     harness:outcome harness:refuse ;
     harness:wiredBy "worker-config" ;
-    harness:enforcedAt "tools/worker.py#skip_reason" , "tools/worker.py#work" ;
+    harness:enforcedAt "tools/worker.py#skip_reason" , "tools/worker.py#vet_claim" ;
     harness:statedBy guide:a-router-dispatches-the-work ;
     harness:firedBy test:test_harness:SensorsFire.test_worker_dispatched_by_a_router .
 
@@ -153,7 +153,7 @@ ctl:worker-one-agent-per-repository a harness:Control ;
     harness:stage harness:runtime ; harness:category harness:authoritySafety ;
     harness:outcome harness:refuse ;
     harness:wiredBy "worker-config" ;
-    harness:enforcedAt "tools/worker.py#skip_reason" , "tools/worker.py#run_once" , "tools/worker.py#work" ;
+    harness:enforcedAt "tools/worker.py#skip_reason" , "tools/worker.py#run_once" , "tools/worker.py#vet_claim" ;
     harness:statedBy guide:one-agent-per-repository ;
     harness:firedBy test:test_harness:SensorsFire.test_worker_one_agent_per_repository .
 

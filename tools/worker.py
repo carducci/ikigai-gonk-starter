@@ -1576,12 +1576,10 @@ class Worker:
                 lock.release()
         return Outcome(NOTHING, "nothing to take")
 
-    def work(self, item: dict, repo: Repo) -> Outcome:
-        number, display, holder = item["number"], item.get("display"), self.cfg.holder
-        answer = self.ledger.claim(number, holder, self.wc.lease)
-        if not answer.ok:
-            return Outcome(NOTHING, f"could not claim {display}: {answer.text()}", number)
-        log(f"claimed {display} for `{holder}` on a {self.wc.lease} lease (repo:{repo.name})")
+    def vet_claim(self, number: int, display: str | None, repo: Repo) -> "dict | Outcome":
+        """The checks after a claim: the item as it is now, or the Outcome of backing off (the
+        claim released). A raise is the caller's to turn into a hand-back."""
+        holder = self.cfg.holder
         other = self.repo_holder(repo.name, gonk.iso_now(), exclude=number)
         if other:
             self.fire_skip(gonk.sensor("worker-one-agent-per-repository"), number)
@@ -1605,10 +1603,29 @@ class Worker:
             self.fire_skip(gonk.sensor("worker-dispatched-by-a-router"), number)
             self.ledger.release(number, holder)
             return Outcome(NOTHING, f"backed off {display}: {problem}")
-        item = fresh
-        beat = Heartbeat(self.ledger, number, holder, self.wc.lease, self.wc.renew_every)
-        beat.start()
+        return fresh
+
+    def work(self, item: dict, repo: Repo) -> Outcome:
+        number, display, holder = item["number"], item.get("display"), self.cfg.holder
+        answer = self.ledger.claim(number, holder, self.wc.lease)
+        if not answer.ok:
+            return Outcome(NOTHING, f"could not claim {display}: {answer.text()}", number)
+        log(f"claimed {display} for `{holder}` on a {self.wc.lease} lease (repo:{repo.name})")
         try:
+            vetted = self.vet_claim(number, display, repo)
+        except Exception as e:  # noqa: BLE001  (a check that raises after the claim hands it back)
+            note = (
+                f"gonk worker `{holder}` failed on {display} before starting and hands it "
+                f"back: {type(e).__name__}: {e}"
+            )
+            self.release_if_ours(number, note)
+            return Outcome(ERROR, note, number)
+        if isinstance(vetted, Outcome):
+            return vetted
+        item = vetted
+        beat = Heartbeat(self.ledger, number, holder, self.wc.lease, self.wc.renew_every)
+        try:
+            beat.start()
             outcome = self.work_claimed(item, repo, beat)
         except Exception as e:  # noqa: BLE001  (any failure after the claim hands the item back)
             beat.stop()
