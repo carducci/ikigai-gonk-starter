@@ -34,6 +34,26 @@ class Durations(unittest.TestCase):
             with self.assertRaises(gonk.ConfigError, msg=bad):
                 worker.seconds(bad, "x")
 
+    def test_every_duration_refusal_in_the_file_names_the_file(self):
+        """Each duration key of worker.toml, top level and [usage], refused as a load error
+        that starts with the file, as every other load error does."""
+        rig = Rig(self)
+        path = rig.checkout / ".gonk" / "worker.toml"
+        base = 'labels = ["worker:w1"]\nrouters = ' + json.dumps([DISPATCHER]) + "\n"
+        agent = '\n[agent]\ncommand = ["x", "{prompt}"]\n'
+        repo = '\n[repos.lib]\nremote = "https://github.com/acme/lib.git"\n'
+        for key in ["renew_every", "poll", "budget", "ci_wait", "ci_poll", "grace"]:
+            text = base + f"{key} = '2700'\n" + agent + repo
+            path.write_text(text)
+            with self.assertRaises(gonk.ConfigError, msg=key) as raised:
+                worker.load_worker(gonk.load(rig.checkout))
+            self.assertTrue(str(raised.exception).startswith(f"{path}: {key} = '2700'"), key)
+        text = base + agent + repo + '\n[usage]\nevery = "1w"\n'
+        path.write_text(text)
+        with self.assertRaises(gonk.ConfigError) as raised:
+            worker.load_worker(gonk.load(rig.checkout))
+        self.assertTrue(str(raised.exception).startswith(f"{path}: "), str(raised.exception))
+
 
 class TheWorkRoot(unittest.TestCase):
     def setUp(self):

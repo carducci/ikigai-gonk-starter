@@ -229,7 +229,7 @@ def load_usage(u, where: str, command: list[str]) -> dict:
     item = u.get("status_item")
     if item is not None and (isinstance(item, bool) or not isinstance(item, int) or item < 1):
         raise gonk.ConfigError(f"{where}: [usage] status_item is an item number")
-    every = seconds(str(u.get("every", "1h")), "usage every")
+    every = seconds(str(u.get("every", "1h")), f"{where}: [usage] every")
     agent = u.get("agent") or Path(command[0]).name
     return {
         "command": cmd,
@@ -273,8 +273,10 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
     lease = str(t.get("lease", gonk.DEFAULT_LEASE))
     if not gonk.LEASE_SHAPE.match(lease):
         raise gonk.ConfigError(f"{where}: lease = {lease!r}: `30m`, `2h` or `PT30M`")
-    lease_s = seconds(lease, "lease")
-    renew = seconds(str(t["renew_every"]), "renew_every") if "renew_every" in t else lease_s // 3
+    lease_s = seconds(lease, f"{where}: lease")
+    renew = lease_s // 3
+    if "renew_every" in t:
+        renew = seconds(str(t["renew_every"]), f"{where}: renew_every")
     if renew < 1 or renew >= lease_s:
         raise gonk.ConfigError(
             f"{where}: renew_every must be at least 1s and shorter than the lease ({lease}), "
@@ -355,11 +357,11 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         work_root=str(t.get("work_root", "~/work")),
         lease=lease,
         renew_every=renew,
-        poll=seconds(str(t.get("poll", "60s")), "poll"),
-        budget=seconds(str(t.get("budget", "45m")), "budget"),
-        ci_wait=seconds(str(t.get("ci_wait", "10m")), "ci_wait"),
-        ci_poll=seconds(str(t.get("ci_poll", "20s")), "ci_poll"),
-        grace=seconds(str(t.get("grace", "10s")), "grace"),
+        poll=seconds(str(t.get("poll", "60s")), f"{where}: poll"),
+        budget=seconds(str(t.get("budget", "45m")), f"{where}: budget"),
+        ci_wait=seconds(str(t.get("ci_wait", "10m")), f"{where}: ci_wait"),
+        ci_poll=seconds(str(t.get("ci_poll", "20s")), f"{where}: ci_poll"),
+        grace=seconds(str(t.get("grace", "10s")), f"{where}: grace"),
         keep=bool(t.get("keep", False)),
         gh=gh,
         command=command,
