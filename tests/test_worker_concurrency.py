@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import threading
 import time
 import unittest
 
-from worker_support import FakeLedger, Rig, worker
+from support import gonk
+from worker_support import DISPATCHER, FakeLedger, Rig, worker
 
 
 class MaxPerRepo(unittest.TestCase):
@@ -31,6 +33,38 @@ class MaxPerRepo(unittest.TestCase):
     def candidates(self, **config):
         self.rig.configure(**config)
         return self.rig.worker(self.ledger).candidates()
+
+    def test_by_default_one_claim_fences_the_repository(self):
+        busy = self.ledger.file("Someone is on lib", ["repo:lib"])
+        self.ledger.force_claim(busy, "chris")
+        lib = self.ledger.file("Also lib", ["worker:w1", "repo:lib"])
+        take, skip, _ = self.candidates()
+        self.assertEqual([i["number"] for i, _ in take], [])
+        self.assertIn(
+            (
+                f"acme#{lib}",
+                f"repo:lib is busy: acme#{busy} is claimed by `chris` (one agent per repository)",
+            ),
+            skip,
+        )
+
+    def test_up_to_max_per_repo_claims_share_a_repository(self):
+        first = self.ledger.file("Someone is on lib", ["repo:lib"])
+        self.ledger.force_claim(first, "chris")
+        lib = self.ledger.file("Also lib", ["worker:w1", "repo:lib"])
+        take, _, _ = self.candidates(max_per_repo="2")
+        self.assertEqual([i["number"] for i, _ in take], [lib])
+
+        second = self.ledger.file("Someone else on lib", ["repo:lib"])
+        self.ledger.force_claim(second, "dana")
+        take, skip, _ = self.candidates(max_per_repo="2")
+        self.assertEqual([i["number"] for i, _ in take], [])
+        [(_, why)] = [s for s in skip if s[0] == f"acme#{lib}"]
+        self.assertEqual(
+            why,
+            f"repo:lib is busy: acme#{first} is claimed by `chris`, acme#{second} is claimed by "
+            "`dana` (2 agents per repository)",
+        )
 
     def test_this_machine_runs_up_to_max_per_repo_items_of_a_repository(self):
         self.rig.configure(max_per_repo="2")
@@ -76,6 +110,33 @@ class MaxPerRepo(unittest.TestCase):
         clone.release()
         run.join(30)
         self.assertEqual(result["outcome"].code, worker.HANDED_BACK, result["outcome"].summary)
+
+
+class MaxPerRepoConfiguration(unittest.TestCase):
+    def setUp(self):
+        self.rig = Rig(self)
+        self.path = self.rig.checkout / ".gonk" / "worker.toml"
+
+    def load(self, extra: str):
+        self.path.write_text(
+            f"routers = {json.dumps([DISPATCHER])}\n"
+            + 'labels = ["worker:w1"]\n'
+            + extra
+            + '\n[agent]\npreset = "codex"\n[repos.lib]\nremote = "https://github.com/acme/lib.git"\n'
+        )
+        return worker.load_worker(gonk.load(self.rig.checkout))
+
+    def test_the_default_is_one(self):
+        self.assertEqual(self.load("").max_per_repo, 1)
+
+    def test_a_number_from_one(self):
+        self.assertEqual(self.load("max_per_repo = 3").max_per_repo, 3)
+
+    def test_zero_a_negative_and_a_word_are_refused(self):
+        for bad in ("0", "-1", '"two"', "true"):
+            with self.subTest(bad=bad), self.assertRaises(gonk.ConfigError) as e:
+                self.load(f"max_per_repo = {bad}")
+            self.assertIn("max_per_repo", str(e.exception))
 
 
 if __name__ == "__main__":

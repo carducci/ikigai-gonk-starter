@@ -21,9 +21,10 @@ What it does with one item, in order:
    DISPATCHED by one of the configured `routers` (`dispatch_problem`: its newest dispatch
    comment by a router names this worker's labels and the item's repository, and pins the
    title and body it still has), is not awaiting its dispatcher (`awaiting_dispatcher`), was
-   not handed back by this worker before, and whose repository has no ACTIVE claim held by
-   anyone (one agent per repository) and no item running on this machine. The dispatch is
-   checked again on the item as read after the claim, and the brief is built from that read.
+   not handed back by this worker before, and whose repository has fewer ACTIVE claims than
+   `max_per_repo` (default 1), and fewer than that many items running on this machine. The
+   dispatch is checked again on the item as read after the claim, and the brief is built from
+   that read.
 2. Claim it with a lease, then renew the lease while it works (the heartbeat). A renewal that
    finds the item held by someone else, released, or closed, or that the ledger refuses, means
    the claim is lost: the agent is stopped and the loss is reported, and nothing is released.
@@ -195,8 +196,9 @@ WORKER_TOML = Path(".gonk") / "worker.toml"
 # like worker.toml), run by `worker/units/gonk-worker@.service` as `gonk-worker@<loop>`. The
 # loop's name is the file's: it keeps its own record of the items it handed back and its own
 # stop file under `.gonk/state/worker/<loop>/`, and shares with every other loop of the
-# checkout the per-repository locks (so two agents never work one repository at once, and
-# never share a repository's clone under the work root) and the stop file for all of them.
+# checkout the per-repository locks (at most `max_per_repo` items of one repository at once,
+# and one writer at a time on a repository's clone under the work root) and the stop file for
+# all of them.
 LOOP_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 LOOP_TOML = re.compile(r"^worker-(.+)\.toml$")
 
@@ -358,6 +360,13 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         if problem:
             raise gonk.ConfigError(f"{where}: holder: {problem}")
 
+    max_per_repo = t.get("max_per_repo", 1)
+    if isinstance(max_per_repo, bool) or not isinstance(max_per_repo, int) or max_per_repo < 1:
+        raise gonk.ConfigError(
+            f"{where}: max_per_repo = {max_per_repo!r}: a whole number from 1, the items of one "
+            "repository this checkout's loops may work at once"
+        )
+
     loop = loop_name(path)
     state_dir = cfg.repo / ".gonk" / "state" / "worker"
     loop_dir = state_dir / loop if loop else state_dir
@@ -385,6 +394,7 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         global_stop=state_dir / "stop",
         loop=loop,
         holder=holder,
+        max_per_repo=max_per_repo,
         usage=load_usage(t.get("usage", {}), where, command),
     )
 
@@ -1416,7 +1426,7 @@ class Worker:
             busy[repo] = self.repo_holder(repo, now, exclude=None)
         if busy[repo]:
             return gonk.sensor("worker-one-agent-per-repository"), (
-                f"repo:{repo} is busy: {busy[repo]} (one agent per repository)"
+                f"repo:{repo} is busy: {busy[repo]} ({self.per_repo()})"
             )
         return None
 
@@ -1428,17 +1438,23 @@ class Worker:
         gonk.fire(control, "refusal", self.cfg.repo)
 
     def repo_holder(self, repo: str, now: datetime, exclude: int | None) -> str | None:
-        """Who holds an ACTIVE claim on an open item of this repository, if anyone."""
+        """Why this repository is full, if it is: `max_per_repo` ACTIVE claims on its open items
+        ."""
         items, err = self.ledger.items(f"repo:{repo}")
         if items is None:
             return f"its claims could not be read ({err})"
+        held = []
         for other in items:
             if other.get("number") == exclude:
                 continue
             holder = active_claim(other, now)
             if holder:
-                return f"{other.get('display')} is claimed by `{holder}`"
-        return None
+                held.append(f"{other.get('display')} is claimed by `{holder}`")
+        return ", ".join(held) if len(held) >= self.wc.max_per_repo else None
+
+    def per_repo(self) -> str:
+        n = self.wc.max_per_repo
+        return "one agent per repository" if n == 1 else f"{n} agents per repository"
 
     # ----------------------------------------------------------------- one item
 
