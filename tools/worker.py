@@ -178,6 +178,7 @@ class WorkerConfig:
     usage: dict = field(default_factory=dict)  # the [usage] table: see tools/worker_usage.py
     loop: str | None = None  # from `worker-<loop>.toml`; None for worker.toml, the one loop
     holder: str | None = None  # overrides .gonk/local.toml's holder for this loop's claims
+    max_per_repo: int = 1  # items of one repository at once, on the ledger and on this machine
 
     def __post_init__(self) -> None:
         self.loop_dir = self.loop_dir or self.state_dir
@@ -707,23 +708,30 @@ class Attempts:
 
 
 class RepoLock:
-    """One item per repository on this machine: an exclusive lock on a file per repository,
-    released when the process ends however it ends."""
+    """Up to `slots` items of one repository on this machine: an exclusive lock on one of
+    `slots` files per repository (`<repo>.lock`, then `<repo>.2.lock`, ...), released when the
+    process ends however it ends. One slot is the lock file every earlier worker took."""
 
-    def __init__(self, state_dir: Path, repo: str) -> None:
-        self.path = state_dir / "locks" / f"{repo}.lock"
+    def __init__(self, state_dir: Path, repo: str, slots: int = 1) -> None:
+        self.paths = [
+            state_dir / "locks" / (f"{repo}.lock" if k == 1 else f"{repo}.{k}.lock")
+            for k in range(1, slots + 1)
+        ]
+        self.path = self.paths[0]
         self.handle = None
 
     def acquire(self) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.path.open("a")
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            handle.close()
-            return False
-        self.handle = handle
-        return True
+        for path in self.paths:
+            handle = path.open("a")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.close()
+                continue
+            self.handle, self.path = handle, path
+            return True
+        return False
 
     def release(self) -> None:
         if self.handle is not None:
@@ -1449,9 +1457,12 @@ class Worker:
         for control, number in self.skipped:
             self.fire_skip(control, number)
         for item, repo in take:
-            lock = RepoLock(self.wc.state_dir, repo.name)
+            lock = RepoLock(self.wc.state_dir, repo.name, self.wc.max_per_repo)
             if not lock.acquire():
-                log(f"skip {item.get('display')}: repo:{repo.name} has an item running here")
+                log(
+                    f"skip {item.get('display')}: repo:{repo.name} has "
+                    f"{self.wc.max_per_repo} item(s) running here"
+                )
                 self.fire_skip(gonk.sensor("worker-one-agent-per-repository"), item["number"])
                 continue
             try:

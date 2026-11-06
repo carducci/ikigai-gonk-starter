@@ -32,6 +32,30 @@ class MaxPerRepo(unittest.TestCase):
         self.rig.configure(**config)
         return self.rig.worker(self.ledger).candidates()
 
+    def test_this_machine_runs_up_to_max_per_repo_items_of_a_repository(self):
+        self.rig.configure(max_per_repo="2")
+        w = self.rig.worker(self.ledger)
+        one = worker.RepoLock(w.wc.state_dir, "lib", slots=2)
+        two = worker.RepoLock(w.wc.state_dir, "lib", slots=2)
+        three = worker.RepoLock(w.wc.state_dir, "lib", slots=2)
+        self.assertTrue(one.acquire())
+        self.addCleanup(one.release)
+        self.assertTrue(two.acquire())
+        self.addCleanup(two.release)
+        self.assertFalse(three.acquire())
+        one.release()
+        self.assertTrue(three.acquire())
+        self.addCleanup(three.release)
+
+    def test_a_one_slot_lock_is_the_old_lock_file(self):
+        # A loop on the old code and one on the new, sharing a checkout in a deploy, still fence.
+        self.rig.configure()
+        w = self.rig.worker(self.ledger)
+        new = worker.RepoLock(w.wc.state_dir, "lib", slots=1)
+        self.assertTrue(new.acquire())
+        self.addCleanup(new.release)
+        self.assertEqual(new.path, w.wc.state_dir / "locks" / "lib.lock")
+
     def test_the_clone_lock_is_free_while_the_agent_runs(self):
         self.rig.agent_flags = ["--sleep", "4"]
         self.ledger.file("Slow lib work", ["worker:w1", "repo:lib"])
