@@ -335,9 +335,10 @@ class TheHolderOverrideAgainstARealGonk(unittest.TestCase):
             f'cert_dir = "{g.bundle("w1")}"\nholder = "w1"\n'
         )
 
-        # Over QUIC a dispatch may not borrow another principal's name: gonk's door refuses an
-        # `author` shaped like a principal that is not the client's own, which is what makes a
-        # dispatch's author worth checking.
+        # Over QUIC a dispatch may not borrow another principal's name: gonk refuses an `author`
+        # that is not the committer, unless the participants graph enrolls the committer to act
+        # for it (prov:actedOnBehalfOf) or the committer is an import principal (ledger:Importer).
+        # That is what makes a dispatch's author worth checking.
         def dispatch(*extra: str) -> tuple[int, str]:
             out = io.StringIO()
             argv = [
