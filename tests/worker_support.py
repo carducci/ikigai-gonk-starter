@@ -100,6 +100,10 @@ class FakeLedger:
         self.tick += 1
         stamp = iso(datetime.now(UTC) + timedelta(microseconds=self.tick * 1000))
         self.items[number]["comments"].append({"author": author, "time": stamp, "text": text})
+        if author == DISPATCHER:
+            # The dispatcher's word takes the item off `awaiting` (ledger 0.8.0), a dispatch
+            # included. Anyone else's comment leaves the state alone.
+            self.items[number]["awaiting"] = None
 
     def item_json(self, number: int) -> dict:
         """The item as the ledger serves it: without `awaiting` on a pre-0.8.0 ledger."""

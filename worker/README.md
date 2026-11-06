@@ -602,9 +602,13 @@ the worker's labels and the item's `repo:` label and pins a digest, and only the
 differs) is not skipped in silence: the worker takes no other action on it (no claim, no
 worktree, no agent run, no pull request) and hands it back, once, with `handback=true` and a
 comment containing "the brief changed after dispatch; dispatch it again" and the dispatch it
-compared against. The comment carries no evidence URL, so the dispatcher sees a plain
-hand-back. It does not repeat on the next poll; a new router dispatch pins the new text and
-routes the item normally. A dispatch that is not by a router, does not name the worker's labels
+compared against. The comment opens `Evidence: none.` (no URL, so the dispatcher sees a plain
+hand-back, and a ledger older than 0.8.0 reads it as one). It is once per dispatch: the
+marker is the item awaiting its dispatcher, or a hand-back comment written by this worker
+itself; the same words in anyone else's comment do not count. A new router dispatch pins the new
+text and routes the item normally. `worker.py plan` lists such an item as `hand back`. The
+usage hold (`[usage]`) stops the worker taking new items, not this hand-back: it spends no
+agent time, and the hold can last until the weekly reset. A dispatch that is not by a router, does not name the worker's labels
 or the `repo:` label, or pins no digest is still a silent skip: the item was never addressed
 here, and a hand-back would let anyone who can edit an item make every loop comment on it.
 

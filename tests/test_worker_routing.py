@@ -216,7 +216,8 @@ class AnEditedItem(unittest.TestCase):
         self.assertEqual(outcome.code, worker.NOTHING, outcome.summary)
         (note,) = self.notes(n)
         self.assertIn(dispatch, note["text"])  # the dispatch it compared against
-        self.assertNotIn("Evidence:", note["text"])
+        # No evidence URL; `Evidence: none` leads so a ledger without `awaiting` reads it too.
+        self.assertTrue(note["text"].startswith("Evidence: none."))
         self.assertEqual(self.ledger.items[n]["awaiting"], "dispatcher")
         self.assert_nothing_ran(n)
 
@@ -242,13 +243,74 @@ class AnEditedItem(unittest.TestCase):
         for _ in range(3):
             self.worker.run_once()
         self.assertEqual(len(self.notes(n)), 1)
+        self.assertTrue(worker.awaiting_dispatcher(self.ledger.item_json(n)))
+
+    def test_a_phrase_in_someone_elses_comment_is_not_the_hand_back(self):
+        for older in (False, True):
+            with self.subTest(older=older):
+                self.ledger.older_comment = older
+                n = self.filed()
+                self.ledger.items[n]["body"] = "Changed."
+                self.ledger.add_comment(n, f"fyi: {self.SAID}", author=OTHER)
+                for _ in range(2):
+                    self.worker.run_once()
+                self.assertEqual(len([c for c in self.notes(n) if c["author"] != OTHER]), 1)
+
+    def test_a_dispatcher_comment_without_a_redispatch_gets_no_second_hand_back(self):
+        n = self.filed()
+        self.ledger.items[n]["body"] = "Changed."
+        self.worker.run_once()
+        self.ledger.add_comment(n, "Noted, one moment.", author=DISPATCHER)  # clears awaiting
+        self.assertFalse(worker.awaiting_dispatcher(self.ledger.item_json(n)))
+        self.worker.run_once()
+        self.assertEqual(len(self.notes(n)), 1)
+
+    def test_the_once_check_compares_instants_not_strings(self):
+        n = self.filed()
+        item = dict(self.ledger.items[n])
+        item.pop("awaiting")
+        item["body"] = "Changed."
+        said = f"Evidence: none. gonk worker `w1` hands x back without evidence: {self.SAID}."
+        item["comments"] = [
+            {**item["comments"][0], "time": "2026-11-06T13:00:00Z"},
+            {"author": "me", "time": "2026-11-06T13:00:00.250Z", "text": said},
+        ]
+        args = ([DISPATCHER], ["worker:w1"])
+        self.assertIsNone(worker.edited_dispatch(item, *args, own=["me"]))
+        item["comments"][1]["time"] = "2026-11-06T12:59:59.750Z"  # older than the dispatch
+        self.assertIsNotNone(worker.edited_dispatch(item, *args, own=["me"]))
+
+    def test_plan_names_the_hand_back_and_posts_nothing(self):
+        n = self.filed()
+        self.ledger.items[n]["body"] = "Changed."
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            worker.main(["--repo", str(self.rig.checkout), "plan"], make_ikigai=self.ledger)
+        self.assertRegex(out.getvalue(), rf"(?m)^hand back\s+acme#{n}\b.*{self.SAID}")
+        self.assertEqual(self.ledger.human_comments(n), [])
+
+    def test_asking_why_not_collects_nothing(self):
+        n = self.filed()
+        self.ledger.items[n]["body"] = "Changed."
+        self.worker.why_not(self.ledger.items[n], worker.gonk.iso_now(), {})
+        self.assertEqual(self.worker.edited, [])
+
+    def test_each_dispatch_gets_one_hand_back_across_cycles(self):
+        n = self.filed()
+        for cycle in (1, 2):
+            self.ledger.items[n]["body"] = f"Edit {cycle}."
+            for _ in range(2):
+                self.worker.run_once()
+            self.assertEqual(len(self.notes(n)), cycle)
+            self.ledger.dispatch(n)  # the router pins the new text; its word clears awaiting
+        self.assertEqual(len(self.notes(n)), 2)
 
     def test_a_redispatch_after_the_edit_is_taken_and_worked(self):
         n = self.filed()
         self.ledger.items[n]["body"] = "Changed."
         self.worker.run_once()
         self.ledger.dispatch(n)  # the router read the new text; the dispatcher's word clears it
-        self.ledger.items[n]["awaiting"] = None
+        self.assertIsNone(self.ledger.items[n]["awaiting"])
         outcome = self.worker.run_once()
         self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
         self.assertEqual(len(self.notes(n)), 1)
