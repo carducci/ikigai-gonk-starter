@@ -87,16 +87,24 @@ XSD_DURATION = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?
 UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
-def seconds(text: str, what: str) -> int:
-    """`90s`, `30m`, `2h`, `1d` or an xsd:duration (`PT30M`), in seconds."""
+def seconds(text: str, what: str, least: int = 1) -> int:
+    """`90s`, `30m`, `2h`, `1d` or an xsd:duration (`PT30M`), in seconds, at least `least`.
+    Zero is refused unless zero means something for this setting (`least=0`), since a zero
+    budget stops the agent at once and a zero lease or poll runs without a pause."""
     m = DURATION.match(text)
     if m:
-        return int(m.group(1)) * UNIT[m.group(2)]
-    m = XSD_DURATION.match(text)
-    if m and text not in ("P", "PT"):
+        total = int(m.group(1)) * UNIT[m.group(2)]
+    else:
+        m = XSD_DURATION.match(text)
+        if not m or text in ("P", "PT"):
+            raise gonk.ConfigError(
+                f"{what} = {text!r}: `90s`, `30m`, `2h`, `1d` or an xsd:duration"
+            )
         d, h, mi, s = (int(g or 0) for g in m.groups())
-        return d * 86400 + h * 3600 + mi * 60 + s
-    raise gonk.ConfigError(f"{what} = {text!r}: `90s`, `30m`, `2h`, `1d` or an xsd:duration")
+        total = d * 86400 + h * 3600 + mi * 60 + s
+    if total < least:
+        raise gonk.ConfigError(f"{what} = {text!r}: at least {least}s")
+    return total
 
 
 def spoken(total: float) -> str:
@@ -357,9 +365,9 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         renew_every=renew,
         poll=seconds(str(t.get("poll", "60s")), "poll"),
         budget=seconds(str(t.get("budget", "45m")), "budget"),
-        ci_wait=seconds(str(t.get("ci_wait", "10m")), "ci_wait"),
+        ci_wait=seconds(str(t.get("ci_wait", "10m")), "ci_wait", least=0),
         ci_poll=seconds(str(t.get("ci_poll", "20s")), "ci_poll"),
-        grace=seconds(str(t.get("grace", "10s")), "grace"),
+        grace=seconds(str(t.get("grace", "10s")), "grace", least=0),
         keep=bool(t.get("keep", False)),
         gh=gh,
         command=command,
