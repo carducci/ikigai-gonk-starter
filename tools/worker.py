@@ -611,6 +611,41 @@ def dispatch_problem(item: dict, routers: list[str], labels: list[str]) -> str |
     return None
 
 
+BRIEF_CHANGED = "the brief changed after dispatch; dispatch it again"
+
+
+def edited_dispatch(item: dict, routers: list[str], labels: list[str]) -> dict | None:
+    """The newest router dispatch, when it was addressed to this worker and only the brief has
+    changed since, and the item has not been handed back for it yet; else None.
+
+    Addressed to this worker means what `dispatch_problem` checks first: a dispatch by a router
+    that names every label this worker selects on and the item's `repo:` label, and pins a
+    digest. Anything less was never sent here, so it stays a silent skip: a hand-back would let
+    anyone who can edit an item make every loop comment on it. Once per dispatch: a hand-back
+    comment newer than the dispatch is the answer already given, and a new dispatch pins the
+    new digest, so it routes the item as usual."""
+    dispatches = [
+        c
+        for c in item.get("comments") or []
+        if gonk.parse_dispatch(c.get("text") or "") is not None and by_router(c, routers)
+    ]
+    if not dispatches or awaiting_dispatcher(item):
+        return None
+    newest = max(dispatches, key=lambda c: c.get("time") or "")
+    named, digest = gonk.parse_dispatch(newest.get("text") or "")
+    need = [*labels, *(f"repo:{r}" for r in repo_labels(item))]
+    if digest is None or any(w not in named for w in need):
+        return None
+    if digest == gonk.brief_digest(item.get("title"), item.get("body")):
+        return None
+    for c in item.get("comments") or []:
+        if BRIEF_CHANGED in (c.get("text") or "") and (c.get("time") or "") > (
+            newest.get("time") or ""
+        ):
+            return None
+    return newest
+
+
 CONTINUE_PR = re.compile(r"\bContinue draft PR (?:([A-Za-z0-9-]+/[A-Za-z0-9._-]+))?#(\d+)\b")
 
 
@@ -1350,6 +1385,7 @@ class Worker:
         # the loop asks again at every poll and a skip that has not changed is not news.
         self.skips_fired: set[tuple[str, int]] = set()
         self.skipped: list[tuple[str, int]] = []
+        self.edited: list[tuple[dict, dict]] = []  # (item, the dispatch it was edited after)
         self.skip_logged: dict[str, str] = {}
         u = wc.usage
         self.usage = worker_usage.UsageWatch(
@@ -1374,6 +1410,7 @@ class Worker:
         take, skip = [], []
         busy: dict[str, str | None] = {}
         self.skipped = []
+        self.edited = []
         for ranked in doc.get("ranking", []):
             item = ranked["item"]
             display = item.get("display", f"#{item.get('number')}")
@@ -1407,6 +1444,9 @@ class Worker:
                 f"repo:{repo} is not one of this worker's repositories"
             )
         problem = dispatch_problem(item, self.wc.routers, self.wc.labels)
+        sent = edited_dispatch(item, self.wc.routers, self.wc.labels)
+        if sent and all(i["number"] != item["number"] for i, _ in self.edited):
+            self.edited.append((item, sent))  # run_once hands it back; nothing else runs
         if problem:
             return gonk.sensor("worker-dispatched-by-a-router"), problem
         if awaiting_dispatcher(item):
@@ -1476,6 +1516,8 @@ class Worker:
                 log(f"skip {display}: {why}")
         for control, number in self.skipped:
             self.fire_skip(control, number)
+        for item, sent in self.edited:
+            self.hand_back_edited(item, sent)
         for item, repo in take:
             lock = RepoLock(self.wc.state_dir, repo.name, self.wc.max_per_repo)
             if not lock.acquire():
@@ -1769,6 +1811,25 @@ class Worker:
         reads it back.
         """
         return self.ledger.comment(number, text, handback="true")
+
+    def hand_back_edited(self, item: dict, sent: dict) -> None:
+        """Hand back an item whose title or body changed after its dispatch: no claim, no
+        worktree, no agent, and no evidence. The dispatcher sees a plain hand-back and answers
+        it by dispatching the item again."""
+        number, display = item["number"], item.get("display")
+        text = sent.get("text") or ""
+        marks = fence(text)
+        note = (
+            f"gonk worker `{self.cfg.holder}` hands {display} back without evidence: "
+            f"{BRIEF_CHANGED}. Compared against the dispatch by {sent.get('author')} at "
+            f"{sent.get('time')}:\n\n{marks}text\n{text}\n{marks}"
+        )
+        answer = self.hand_back(number, note)
+        log(
+            f"handed {display} back: {BRIEF_CHANGED}"
+            if answer.ok
+            else f"could not hand {display} back: {answer.text()}"
+        )
 
     def release_if_ours(self, number: int, note: str) -> bool:
         """Post the note, then release only a claim that is still this worker's. The note is
