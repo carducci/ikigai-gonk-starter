@@ -638,8 +638,17 @@ def is_edit_hand_back(comment: dict, own: Iterable[str]) -> bool:
     return any(author == a or gonk.same_principal(author, a) for a in own)
 
 
+def dispatch_key(item: dict, dispatch: dict) -> str:
+    """Names one dispatch of one item, for the record of the hand-backs this worker made."""
+    return f"{item.get('number')}@{dispatch.get('time')}"
+
+
 def edited_dispatch(
-    item: dict, routers: list[str], labels: list[str], own: Iterable[str] = ()
+    item: dict,
+    routers: list[str],
+    labels: list[str],
+    own: Iterable[str] = (),
+    answered: Iterable[str] = (),
 ) -> dict | None:
     """The newest router dispatch, when it was addressed to this worker and only the brief has
     changed since, and the item has not been handed back for it yet; else None.
@@ -651,8 +660,11 @@ def edited_dispatch(
     waiting for its dispatcher (the ledger's `awaiting` state, or the `Evidence:` prefix on a
     ledger without it) is handed back, and a hand-back comment by this worker (an `own` author)
     newer than the dispatch is the answer already given, even after the dispatcher spoke
-    without dispatching again. A comment by anyone else is never the marker. A new dispatch
-    pins the new digest, so it routes the item as usual."""
+    without dispatching again. A comment by anyone else is never the marker, and the holder
+    label is free text any writer can sign, so it is no `own` author. `answered` is this
+    worker's own record, on disk, of the dispatches it handed back (`dispatch_key`): it needs
+    no comment to be told apart, and a restarted loop reads it too. A new dispatch pins the new
+    digest, so it routes the item as usual."""
     dispatches = [
         c
         for c in item.get("comments") or []
@@ -666,6 +678,8 @@ def edited_dispatch(
     if digest is None or any(w not in named for w in need):
         return None
     if digest == gonk.brief_digest(item.get("title"), item.get("body")):
+        return None
+    if dispatch_key(item, newest) in set(answered):
         return None
     sent_at = instant(newest.get("time"))
     for c in item.get("comments") or []:
@@ -780,6 +794,26 @@ class Attempts:
             return False
         self.path.write_text(json.dumps(table, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return True
+
+
+class EditAnswers:
+    """The dispatches of edited items this worker handed back, one `dispatch_key` each, so it
+    hands back once per dispatch. A file, not memory, so a restarted worker remembers."""
+
+    def __init__(self, state_dir: Path) -> None:
+        self.path = state_dir / "edit-handbacks.json"
+
+    def read(self) -> set[str]:
+        try:
+            return set(json.loads(self.path.read_text(encoding="utf-8")))
+        except FileNotFoundError:
+            return set()
+        except ValueError as e:
+            raise gonk.ConfigError(f"{self.path}: {e}") from e
+
+    def add(self, key: str) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(sorted(self.read() | {key})) + "\n", encoding="utf-8")
 
 
 class RepoLock:
@@ -1415,10 +1449,11 @@ class Worker:
         self.skips_fired: set[tuple[str, int]] = set()
         self.skipped: list[tuple[str, int]] = []
         self.edited: list[tuple[dict, dict]] = []  # (item, the dispatch it was edited after)
-        # The authors this worker's own comments carry: its holder label (the owner's socket
-        # signs with it), and whatever the ledger recorded on a hand-back it posted (the
-        # machine's principal over QUIC, which the door stamps).
-        self.own_authors: set[str] = {self.cfg.holder}
+        # The authors this worker's own comments carry: whatever the ledger recorded on a
+        # hand-back it posted (the machine's principal over QUIC, which the door stamps). Never
+        # the holder label: it is free text, and any writer can sign a comment with it.
+        self.own_authors: set[str] = set()
+        self.edit_answers = EditAnswers(wc.loop_dir)
         self.skip_logged: dict[str, str] = {}
         u = wc.usage
         self.usage = worker_usage.UsageWatch(
@@ -1465,7 +1500,9 @@ class Worker:
             repos = repo_labels(item)
             if item.get("claim") or len(repos) != 1 or repos[0] not in self.wc.repos:
                 continue
-            sent = edited_dispatch(item, self.wc.routers, self.wc.labels, self.own_authors)
+            sent = edited_dispatch(
+                item, self.wc.routers, self.wc.labels, self.own_authors, self.edit_answers.read()
+            )
             if sent:
                 found.append((item, sent))
         return found
@@ -1879,6 +1916,7 @@ class Worker:
             log(f"could not hand {display} back: {answer.text()}")
             return
         log(f"handed {display} back: {BRIEF_CHANGED}")
+        self.edit_answers.add(dispatch_key(item, sent))
         # Learn the author the ledger recorded on it: on a door that stamps a principal, that
         # is the only thing that tells this worker's comment from a copy of its words.
         fresh, _ = self.ledger.item(number)
