@@ -1576,7 +1576,7 @@ class Worker:
                 lock.release()
         return Outcome(NOTHING, "nothing to take")
 
-    def vet_claim(self, number: int, display: str | None, repo: Repo) -> "dict | Outcome":
+    def vet_claim(self, number: int, display: str | None, repo: Repo) -> dict | Outcome:
         """The checks after a claim: the item as it is now, or the Outcome of backing off (the
         claim released). A raise is the caller's to turn into a hand-back."""
         holder = self.cfg.holder
