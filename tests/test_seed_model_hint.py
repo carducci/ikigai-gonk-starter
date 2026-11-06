@@ -143,14 +143,7 @@ class SeedModelHint(unittest.TestCase):
         self.assertEqual(1, len(appended))
         self.assertIn("x 1.2: new", appended[0][1])
 
-    def test_a_bad_hint_in_another_change_is_not_refused(self):
-        code, appended, _ = seed(
-            "- [ ] 1.1 [opus] fine\n", others={"b": "- [ ] 1.1 [sonet] bad\n"}, changes=["x"]
-        )
-        self.assertEqual(0, code)
-        self.assertEqual(1, len(appended))
-
-    def test_a_bad_hint_in_a_change_seeded_is_still_refused(self):
+    def test_a_bad_hint_in_any_change_seeded_is_refused(self):
         code, appended, err = seed(
             "- [ ] 1.1 [opus] fine\n", others={"b": "- [ ] 1.1 [sonet] bad\n"}
         )
@@ -181,7 +174,11 @@ class SeedModelHint(unittest.TestCase):
 
     def test_the_title_has_no_whitespace_at_its_ends_once_the_citation_is_removed(self):
         sp = IDEOGRAPHIC_SPACE
-        for line in (f"- [ ] 1.1 [sonnet] Add x{sp}(R)", f"- [ ] 1.1 Add x{sp}(R)", "- [ ] 1.1 \tAdd x"):
+        for line in (
+            f"- [ ] 1.1 [sonnet] Add x{sp}(R)",
+            f"- [ ] 1.1 Add x{sp}(R)",
+            "- [ ] 1.1 \tAdd x",
+        ):
             with self.subTest(line=line):
                 _, appended, _ = seed(line + "\n")
                 self.assertTrue(appended[0][1].startswith("x 1.1: Add x\n"), appended[0][1])

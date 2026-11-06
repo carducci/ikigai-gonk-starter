@@ -37,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -544,6 +545,17 @@ def artifact_problems(repo: Path, layout: dict) -> list[str]:
 #   urn:openspec:spec:<capability>:requirement:<slug>
 TASK_LINE = re.compile(r"^\s*[-*] \[( |x|X)\] (\d+(?:\.\d+)*) +(.+?)\s*$")
 CITES = re.compile(r"^(.*?) *\(([^()]+)\)$")
+# `[sonnet]` or `[haiku repo:other]` after a task's number: the model that does it, and the
+# repository when it is not this one (dax-routes, design D6).
+# A bracket followed at once by `(` is a Markdown link, not a hint.
+HINT = re.compile(r"^\[([^\]]*)\](?!\()\s*(.*)$")
+# A trailing `(human: ...)` note, whatever parentheses its text holds (TASK_LINE trims the end).
+HUMAN_NOTE = re.compile(r"\(\s*human\s*:.*\)$", re.IGNORECASE)
+HINT_MODELS = ("haiku", "sonnet", "opus")
+HINT_REPO = re.compile(r"^repo:(.*)$")
+# A repository's name, and a GitHub remote's `owner/name` (tools/worker.py reads both).
+REPO_SHAPE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
+GITHUB_REMOTE = re.compile(r"github\.com[:/]([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$")
 DELTA_SECTION = re.compile(r"^## (ADDED|MODIFIED|REMOVED|RENAMED) Requirements\s*$")
 REQUIREMENT = re.compile(r"^### Requirement: (.+?)\s*$")
 
@@ -565,6 +577,9 @@ class Task:
     done: bool
     cites: str | None  # the requirement named in the task's trailing parentheses
     requirement: str | None  # its IRI, when the change's delta adds or modifies that name
+    model: str | None = None  # `sonnet`, from a `[sonnet]` hint
+    repo: str | None = None  # `other`, from `[sonnet repo:other]`; None is this repository
+    hint_error: str | None = None  # why the line's hint is refused; `seed` raises it if open
 
     @property
     def iri(self) -> str:
@@ -577,6 +592,53 @@ class Change:
     title: str
     artifacts: list[str]
     tasks: list[Task]
+
+
+def parse_hint(text: str, where: str) -> tuple[str | None, str | None, str]:
+    """(model, repo, the text without the hint) for a task's text; `where` names its line."""
+    m = HINT.match(text)
+    if not m:
+        return None, None, text
+    rest = m.group(2).strip()
+    if not rest:
+        raise ConfigError(f"{where}: the task has no text after its `[...]` hint")
+    words = m.group(1).split()
+    if not words or words[0] not in HINT_MODELS:
+        raise ConfigError(
+            f"{where}: {(words[0] if words else '')!r} is not a model "
+            f"({', '.join(HINT_MODELS)}) in the task's `[...]` hint"
+        )
+    repo = None
+    for word in words[1:]:
+        r = HINT_REPO.match(word)
+        if r is None or repo is not None or not REPO_SHAPE.match(r.group(1)):
+            raise ConfigError(f"{where}: {word!r} is not `repo:<name>` in the task's `[...]` hint")
+        repo = r.group(1)
+    return words[0], repo, rest
+
+
+def repo_name(repo: Path) -> str:
+    """This repository's name: the `origin` URL's, else its folder's. Each must have the shape
+    of a `repo:` name; ConfigError when neither does."""
+    try:
+        done = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        url = done.stdout.strip() if done.returncode == 0 else ""
+    except OSError:  # no git on PATH: no origin
+        url = ""
+    m = GITHUB_REMOTE.search(url)
+    named = m.group(1).split("/")[1] if m else ""
+    for name in (named, repo.name):
+        if REPO_SHAPE.match(name):
+            return name
+    raise ConfigError(
+        f"the origin's name and the folder {repo.name!r} are not a repository name "
+        "(letters, digits, `.`, `_`, `-`); give the task `repo:<name>`"
+    )
 
 
 def openspec_root(repo: Path, layout: dict) -> Path | None:
@@ -626,14 +688,30 @@ def open_changes(repo: Path, layout: dict) -> list[Change]:
         tasks = []
         tasks_md = folder / "tasks.md"
         if tasks_md.is_file():
-            for line in tasks_md.read_text(encoding="utf-8").splitlines():
+            for lineno, line in enumerate(tasks_md.read_text(encoding="utf-8").splitlines(), 1):
                 m = TASK_LINE.match(line)
                 if not m:
                     continue
-                text, cites = m.group(3), None
+                where = f"{tasks_md.relative_to(repo)}:{lineno}"
+                # A bad hint is kept on the task, and `seed` refuses it only for an open task of
+                # a change it seeds; `init` and a done task never do.
+                error = None
+                try:
+                    model, task_repo, text = parse_hint(m.group(3), where)
+                except ConfigError as e:
+                    model = task_repo = None
+                    text, error = m.group(3), str(e)
+                cites = None
                 c = CITES.match(text)
                 if c:
                     text, cites = c.group(1), c.group(2)
+                text = text.strip()
+                # A refused hint leaves its bracket in the text, so never empty. U+200B and its
+                # kind (category Cf) are invisible, so a title of them is none.
+                if not any(not ch.isspace() and unicodedata.category(ch) != "Cf" for ch in text):
+                    error = f"{where}: the task has no title once its hint and citation are removed"
+                if model and HUMAN_NOTE.search(m.group(3)):
+                    error = f"{where}: a `(human: ...)` task carries no `[...]` hint"
                 tasks.append(
                     Task(
                         change=folder.name,
@@ -642,6 +720,9 @@ def open_changes(repo: Path, layout: dict) -> list[Change]:
                         done=m.group(1) != " ",
                         cites=cites,
                         requirement=named.get(cites) if cites else None,
+                        model=model,
+                        repo=task_repo,
+                        hint_error=error,
                     )
                 )
         changes.append(Change(folder.name, title, artifacts, tasks))
@@ -653,9 +734,13 @@ def open_changes(repo: Path, layout: dict) -> list[Change]:
 APPENDED = re.compile(r"^(\S+#\d+) (\S+)(?: (existing) (\S+))?\s*$", re.MULTILINE)
 
 
-def seed_request(change: Change, task: Task) -> tuple[str, str, str]:
-    """(the append's arguments, its content, a one-line description) for one open task."""
-    labels = ",".join([f"change:{change.id}", *(f"artifact:{a}" for a in change.artifacts)])
+def seed_request(change: Change, task: Task, repo: str = "") -> tuple[str, str, str]:
+    """(the append's arguments, its content, a one-line description) for one open task.
+    `repo` is this repository's name, the default of a hinted task's `repo:` label."""
+    labels = [f"change:{change.id}", *(f"artifact:{a}" for a in change.artifacts)]
+    if task.model:
+        labels += [f"agent:claude-{task.model}", f"repo:{task.repo or repo}"]
+    labels = ",".join(labels)
     about = " ".join([task.iri, *([task.requirement] if task.requirement else [])])
     words = [f"labels={labels}", f"key={task.iri}", f'about="{about}"']
     body = [
@@ -728,6 +813,10 @@ def cmd_seed(args, cfg: Config, make_ikigai) -> int:
     with the `delete` that removes a link."""
     changes = open_changes(cfg.repo, cfg.layout)
     todo = [(c, t) for c in changes for t in c.tasks if not t.done]
+    for _, t in todo:
+        if t.hint_error:
+            raise ConfigError(t.hint_error)
+    here = repo_name(cfg.repo) if any(t.model and not t.repo for _, t in todo) else ""
     checked = sum(1 for c in changes for t in c.tasks if t.done)
     if not args.dry_run:
         need(cfg, "ledger", "target")
@@ -736,8 +825,9 @@ def cmd_seed(args, cfg: Config, make_ikigai) -> int:
         return 0
     if args.dry_run:
         for change, task in todo:
-            _, _, what = seed_request(change, task)
-            print(f"would file  {what}\n            key={task.iri}")
+            request, _, what = seed_request(change, task, here)
+            labels = request.split(" ")[0]
+            print(f"would file  {what}\n            {labels}\n            key={task.iri}")
         planned = {t.iri: None for _, t in todo}
         pairs = [p for c in changes for p in order_pairs(c, planned)]
         for a, b in pairs:
@@ -751,7 +841,7 @@ def cmd_seed(args, cfg: Config, make_ikigai) -> int:
     filed = existing = failed = 0
     seeded: dict[str, Seeded] = {}
     for change, task in todo:
-        words, content, what = seed_request(change, task)
+        words, content, what = seed_request(change, task, here)
         answer = ikigai.run(f"sink {cfg.resource('append')} {words}", stdin=content)
         m = APPENDED.search(answer.out) if answer.ok else None
         if m is None:
