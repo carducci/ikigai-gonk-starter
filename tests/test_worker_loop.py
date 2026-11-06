@@ -34,6 +34,12 @@ class Durations(unittest.TestCase):
             with self.assertRaises(gonk.ConfigError, msg=bad):
                 worker.seconds(bad, "x")
 
+    def test_zero_is_refused_unless_zero_means_something_here(self):
+        for text in ["0s", "0m", "PT0S", "P0D"]:
+            with self.assertRaises(gonk.ConfigError, msg=text):
+                worker.seconds(text, "budget")
+            self.assertEqual(worker.seconds(text, "grace", least=0), 0, text)
+
 
 class TheWorkRoot(unittest.TestCase):
     def setUp(self):

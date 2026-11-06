@@ -41,6 +41,15 @@ class ALoopsConfiguration(unittest.TestCase):
     def load(self, path: Path) -> worker.WorkerConfig:
         return worker.load_worker(gonk.load(self.rig.checkout), path)
 
+    def test_a_zero_budget_lease_or_poll_is_refused_and_a_zero_ci_wait_is_not(self):
+        for key in ["budget", "lease", "poll", "ci_poll"]:
+            path = self.rig.configure(**{key: '"0s"'})
+            with self.assertRaises(gonk.ConfigError, msg=key):
+                self.load(path)
+        path = self.rig.configure(ci_wait='"0s"', grace='"0s"')
+        wc = self.load(path)
+        self.assertEqual((wc.ci_wait, wc.grace), (0, 0))
+
     def test_its_loop_labels_holder_and_state(self):
         path = self.rig.configure("worker-codex.toml", labels=CODEX, holder='"w1-codex"')
         wc = self.load(path)
