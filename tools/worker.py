@@ -870,6 +870,34 @@ def must(done: subprocess.CompletedProcess, what: str) -> str:
     return done.stdout
 
 
+REVIEW_BRANCH = re.compile(r"review/pr-[0-9]+")
+
+
+def said(done: subprocess.CompletedProcess) -> str:
+    return (done.stderr or done.stdout).strip()[-200:]
+
+
+def push_review_branches(path: Path) -> list[str]:
+    """A reviewer's failing tests (review-once D3): push each local `review/pr-<n>` branch in the
+    worktree to the same name on origin, never forced, and say what happened, one line each. Any
+    other branch under `review/` is named and left alone. The agent commits; only this pushes."""
+    refs = git("for-each-ref", "--format=%(refname:short)", "refs/heads/review/", cwd=path)
+    if refs.returncode != 0:
+        return [f"- review branches could not be listed: {said(refs)}"]
+    lines = []
+    for name in refs.stdout.split():
+        if not REVIEW_BRANCH.fullmatch(name):
+            lines.append(f"- review branch {name}: not pushed (only review/pr-<n> is)")
+            continue
+        sha = git("rev-parse", "--short=12", f"refs/heads/{name}", cwd=path).stdout.strip()
+        done = git("push", "--quiet", "origin", f"refs/heads/{name}:refs/heads/{name}", cwd=path)
+        if done.returncode == 0:
+            lines.append(f"- review branch {name} at {sha}: pushed")
+        else:
+            lines.append(f"- review branch {name} at {sha}: NOT pushed: {said(done)}")
+    return lines
+
+
 @dataclass
 class Workspace:
     path: Path
@@ -1663,6 +1691,8 @@ class Worker:
             self.release_if_ours(number, note)
             return Outcome(NOT_HANDED_BACK, note.splitlines()[0], prs=prs)
 
+        # A reviewer's failing tests go up before anything else is reported (review-once).
+        review_lines = push_review_branches(ws.path) if "review" in self.wc.labels else []
         evidence = prs[0].url if prs else self.reported_evidence(ws)
         if not evidence:
             gonk.fire("worker-no-evidence", "refusal", self.cfg.repo)
@@ -1685,6 +1715,8 @@ class Worker:
         ]
         if stacked_on:
             body += ["", stack_line(stacked_on, start, prs[0] if prs else None)]
+        if review_lines:
+            body += ["", *review_lines]
         if prs:
             body += ["", *lines]
             if report := self.report_lines(ws)[-40:]:  # the last: a `Verdict:` ends it

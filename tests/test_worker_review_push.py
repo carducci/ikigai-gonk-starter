@@ -1,0 +1,99 @@
+"""review-once (Michael with Pax, 2026-11-06): a reviewer loop's worker pushes the reviewer's
+`review/pr-<n>` branches, never forced; the reviewer agent never pushes."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+
+import worker  # noqa: E402
+
+ENV = {
+    **os.environ,
+    "GIT_AUTHOR_NAME": "r",
+    "GIT_AUTHOR_EMAIL": "reviewer@tamariz.invalid",
+    "GIT_COMMITTER_NAME": "r",
+    "GIT_COMMITTER_EMAIL": "reviewer@tamariz.invalid",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+}
+
+
+def git(cwd, *argv):
+    p = subprocess.run(["git", *argv], cwd=cwd, env=ENV, capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    return p.stdout.strip()
+
+
+class PushReviewBranches(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.origin = Path(d.name) / "origin.git"
+        self.work = Path(d.name) / "work"
+        git(d.name, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        git(d.name, "clone", "-q", str(self.origin), str(self.work))
+        (self.work / "a.py").write_text("x = 1\n")
+        git(self.work, "add", "-A")
+        git(self.work, "commit", "-q", "-m", "base")
+        git(self.work, "push", "-q", "origin", "HEAD:main")
+        self._env = dict(os.environ)
+        os.environ.update(ENV)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(self._env)))
+
+    def commit_test(self, branch, name="test_x.py"):
+        git(self.work, "switch", "-q", "-c", branch)
+        (self.work / name).write_text("assert False\n")
+        git(self.work, "add", "-A")
+        git(self.work, "commit", "-q", "-m", "review: a failing test")
+        git(self.work, "switch", "-q", "--detach", "main")
+
+    def on_origin(self, branch):
+        argv = ["git", "--git-dir", str(self.origin), "rev-parse", "--verify", "-q", branch]
+        return subprocess.run(argv, capture_output=True, text=True).stdout.strip()
+
+    def test_a_review_branch_is_pushed(self):
+        self.commit_test("review/pr-7")
+        lines = worker.push_review_branches(self.work)
+        self.assertEqual(1, len(lines))
+        self.assertRegex(lines[0], r"^- review branch review/pr-7 at [0-9a-f]{12}: pushed$")
+        self.assertTrue(self.on_origin("refs/heads/review/pr-7"))
+
+    def test_no_review_branch_says_nothing(self):
+        self.assertEqual([], worker.push_review_branches(self.work))
+
+    def test_another_name_under_review_is_not_pushed(self):
+        self.commit_test("review/main")
+        lines = worker.push_review_branches(self.work)
+        self.assertEqual(["- review branch review/main: not pushed (only review/pr-<n> is)"], lines)
+        self.assertFalse(self.on_origin("refs/heads/review/main"))
+
+    def test_a_push_that_isnt_a_fast_forward_is_reported_not_forced(self):
+        self.commit_test("review/pr-7")
+        worker.push_review_branches(self.work)
+        before = self.on_origin("refs/heads/review/pr-7")
+        git(self.work, "branch", "-q", "-f", "review/pr-7", "main")  # rewritten history
+        (self.work / "b.py").write_text("y = 2\n")
+        git(self.work, "switch", "-q", "review/pr-7")
+        git(self.work, "add", "-A")
+        git(self.work, "commit", "-q", "-m", "another")
+        git(self.work, "switch", "-q", "--detach", "main")
+        lines = worker.push_review_branches(self.work)
+        self.assertIn(": NOT pushed: ", lines[0])
+        self.assertEqual(before, self.on_origin("refs/heads/review/pr-7"))
+
+    def test_a_reviewer_loop_pushes_and_a_coder_loop_does_not(self):
+        src = (ROOT / "tools" / "worker.py").read_text()
+        wired = 'review_lines = push_review_branches(ws.path) if "review" in self.wc.labels else []'
+        self.assertIn(wired, src)
+
+
+if __name__ == "__main__":
+    unittest.main()
