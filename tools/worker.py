@@ -82,8 +82,8 @@ import worker_usage  # noqa: E402
 
 # --------------------------------------------------------------------------- durations
 
-DURATION = re.compile(r"^(\d+)([smhd])$")
-XSD_DURATION = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
+DURATION = re.compile(r"^(\d+)([smhd])\Z")
+XSD_DURATION = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?\Z")
 UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 

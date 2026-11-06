@@ -66,7 +66,7 @@ HOLDER_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:+-]{0,127}$")
 HOLDER_RESERVED = frozenset({"none", "any"})
 
 # `30m`, `2h`, `1d`, `90s`, or an xsd:duration of days, hours, minutes and seconds.
-LEASE_SHAPE = re.compile(r"^(?:\d+[smhd]|P(?:\d+D)?(?:T(?:\d+H)?(?:\d+M)?(?:\d+S)?)?)$")
+LEASE_SHAPE = re.compile(r"^(?:\d+[smhd]|P(?:\d+D)?(?:T(?:\d+H)?(?:\d+M)?(?:\d+S)?)?)\Z")
 DEFAULT_LEASE = "30m"
 
 ARTIFACT_SHAPE = LEDGER_SHAPE

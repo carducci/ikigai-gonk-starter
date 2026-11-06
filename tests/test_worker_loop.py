@@ -34,6 +34,17 @@ class Durations(unittest.TestCase):
             with self.assertRaises(gonk.ConfigError, msg=bad):
                 worker.seconds(bad, "x")
 
+    def test_a_trailing_newline_is_not_part_of_a_duration(self):
+        # `$` matches before a final newline; the patterns end in `\Z`, so the newline is refused
+        # rather than loaded, and never reaches the ledger in a claim's lease.
+        for text in ["30m\n", "PT30M\n", "P1D\n", "90s\n"]:
+            with self.assertRaises(gonk.ConfigError, msg=repr(text)):
+                worker.seconds(text, "budget")
+        for text in ["30m\n", "2h\n", "PT30M\n", "P1DT1S\n"]:
+            self.assertIsNone(gonk.LEASE_SHAPE.match(text), repr(text))
+        self.assertIsNone(worker.DURATION.match("30m\n"))
+        self.assertIsNone(worker.XSD_DURATION.match("PT30M\n"))
+
 
 class TheWorkRoot(unittest.TestCase):
     def setUp(self):
