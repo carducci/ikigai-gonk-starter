@@ -835,7 +835,9 @@ claim that is no longer its own.
 - **The brief is the item's body** behind the worker's fixed preamble, until briefs are
   resources gonk serves. The item's comments (from the dispatcher and others, oldest
   first, excluding the worker's own hand-back comments) are included as a marked
-  block, bounded in size.
+  block, bounded in size. A NUL in the title, body or a comment cannot be an argv word, so
+  the brief replaces each with U+FFFD; `{prompt}` and the `{prompt_file}` content both carry
+  the replacement, not the original byte.
 - **The grant is wider than the worker.** Today a machine identity is enrolled with
   `<ledger>=write`, which can also close, relabel and file; the worker's code does none of
   those, but nothing in gonk stops it, and the agent runs as the same account and could use
