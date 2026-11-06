@@ -798,6 +798,40 @@ class TheLoop(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIn("a pass raised RuntimeError: boom", out.getvalue())
 
+    def test_a_dispatch_check_that_raises_after_the_claim_releases_the_claim(self):
+        # The check runs again on the fresh read after the claim (Worker.work), outside the try
+        # that hands an item back. A raise there must not leave the item claimed by this worker:
+        # the loop goes on, but the item stays held, with no note, until someone takes it over.
+        n = self.ledger.file("Raises after the claim", ["worker:w1", "repo:lib"])
+        real = worker.dispatch_problem
+        checks = []
+
+        def raising(item, *args):
+            checks.append(item["number"])
+            if len(checks) > 1:
+                raise RuntimeError("the check broke")
+            return real(item, *args)
+
+        self.rig.configure()
+        w = self.rig.worker(self.ledger)
+        w.wc.poll = 0
+        once, passes = w.run_once, []
+
+        def counted():
+            passes.append(1)
+            if len(passes) > 1:
+                w.shutdown.set()
+            return once()
+
+        w.run_once = counted
+        with mock.patch.object(worker, "dispatch_problem", raising):
+            try:
+                w.loop()
+            except RuntimeError as e:
+                self.fail(f"the loop ended on {e!r}")
+        self.assertGreaterEqual(len(checks), 2, "the check never ran after the claim")
+        self.assertIsNone(self.ledger.items[n]["claim"], "the worker still holds the item")
+
     def test_a_second_run_of_one_item_gets_a_fresh_directory(self):
         n = self.ledger.file("Again", ["worker:w1", "repo:lib"])
         self.assertEqual(self.run_once(keep="true").code, worker.HANDED_BACK)
