@@ -1064,8 +1064,11 @@ def brief(
     body = (item.get("body") or "").strip()
     comments = brief_comments(item, routers)
     if body:
-        return f"{text}\n# {title}\n\n{body}\n{comments}"
-    return f"{text}\n# {title}\n\n{comments}" if comments else f"{text}\n# {title}\n"
+        out = f"{text}\n# {title}\n\n{body}\n{comments}"
+    else:
+        out = f"{text}\n# {title}\n\n{comments}" if comments else f"{text}\n# {title}\n"
+    # A NUL cannot be in an argv word (execve ends the string there; Popen raises ValueError).
+    return out.replace("\x00", "�")
 
 
 def agent_argv(command: list[str], values: dict[str, str]) -> list[str]:
