@@ -547,15 +547,14 @@ TASK_LINE = re.compile(r"^\s*[-*] \[( |x|X)\] (\d+(?:\.\d+)*) +(.+?)\s*$")
 CITES = re.compile(r"^(.*?) *\(([^()]+)\)$")
 # `[sonnet]` or `[haiku repo:other]` after a task's number: the model that does it, and the
 # repository when it is not this one (dax-routes, design D6).
-# A bracket followed at once by `(` is a Markdown link, not a hint.
-HINT = re.compile(r"^\[([^\]]*)\](?!\()\s*(.*)$")
-# A trailing `(human: ...)` note, whatever parentheses its text holds (TASK_LINE trims the end).
-HUMAN_NOTE = re.compile(r"\(\s*human\s*:.*\)$", re.IGNORECASE)
+# A bracket followed at once by `(` is a Markdown link, not a hint, unless its text is a model.
+HINT = re.compile(r"^\[([^\]]*)\](\()?\s*(.*)$")
+# A `(human: ...)` or `[human: ...]` note anywhere in a task, with an ASCII or fullwidth colon.
+HUMAN_NOTE = re.compile(r"[(\[（［]\s*human\s*[:：]", re.IGNORECASE)
 HINT_MODELS = ("haiku", "sonnet", "opus")
 HINT_REPO = re.compile(r"^repo:(.*)$")
-# A repository's name, and a GitHub remote's `owner/name` (tools/worker.py reads both).
+# A repository's name.
 REPO_SHAPE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
-GITHUB_REMOTE = re.compile(r"github\.com[:/]([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$")
 DELTA_SECTION = re.compile(r"^## (ADDED|MODIFIED|REMOVED|RENAMED) Requirements\s*$")
 REQUIREMENT = re.compile(r"^### Requirement: (.+?)\s*$")
 
@@ -599,10 +598,15 @@ def parse_hint(text: str, where: str) -> tuple[str | None, str | None, str]:
     m = HINT.match(text)
     if not m:
         return None, None, text
-    rest = m.group(2).strip()
+    words = m.group(1).split()
+    if m.group(2):
+        # `[opus](R)` is a typo for a hint, not a link; any other `[text](` is a link.
+        if words and words[0] in HINT_MODELS and all(w.startswith("repo:") for w in words[1:]):
+            raise ConfigError(f"{where}: the hint `[{m.group(1)}]` is followed at once by `(`")
+        return None, None, text
+    rest = m.group(3).strip()
     if not rest:
         raise ConfigError(f"{where}: the task has no text after its `[...]` hint")
-    words = m.group(1).split()
     if not words or words[0] not in HINT_MODELS:
         raise ConfigError(
             f"{where}: {(words[0] if words else '')!r} is not a model "
@@ -618,11 +622,12 @@ def parse_hint(text: str, where: str) -> tuple[str | None, str | None, str]:
 
 
 def repo_name(repo: Path) -> str:
-    """This repository's name: the `origin` URL's, else its folder's. Each must have the shape
-    of a `repo:` name; ConfigError when neither does."""
+    """This repository's name: the last path segment of its `origin` URL (read through
+    `insteadOf`; any host or a local path; without `.git` or a trailing `/`), else its folder's.
+    Each must have the shape of a `repo:` name; ConfigError when neither does."""
     try:
         done = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],
+            ["git", "remote", "get-url", "origin"],
             cwd=repo,
             capture_output=True,
             text=True,
@@ -630,8 +635,7 @@ def repo_name(repo: Path) -> str:
         url = done.stdout.strip() if done.returncode == 0 else ""
     except OSError:  # no git on PATH: no origin
         url = ""
-    m = GITHUB_REMOTE.search(url)
-    named = m.group(1).split("/")[1] if m else ""
+    named = re.split(r"[/:\\]", url.rstrip("/").removesuffix(".git").rstrip("/"))[-1]
     for name in (named, repo.name):
         if REPO_SHAPE.match(name):
             return name
