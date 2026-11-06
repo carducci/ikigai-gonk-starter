@@ -1330,6 +1330,9 @@ def brief_comments(item: dict, routers: list[str] | None = None) -> str:
     return "\n\n" + "\n\n".join(out) + "\n"
 
 
+LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
 def brief(
     item: dict,
     ledger: str,
@@ -1369,7 +1372,8 @@ def brief(
     else:
         out = f"{text}\n# {title}\n\n{comments}" if comments else f"{text}\n# {title}\n"
     # A NUL cannot be in an argv word (execve ends the string there; Popen raises ValueError).
-    return out.replace("\x00", "�")
+    # Nor can a lone surrogate be encoded as UTF-8 (json.loads turns "\udc00" into one).
+    return LONE_SURROGATE.sub("�", out.replace("\x00", "�"))
 
 
 def agent_argv(command: list[str], values: dict[str, str]) -> list[str]:
