@@ -1192,7 +1192,8 @@ class GitHub:
     def pull_requests(self, branch: str) -> tuple[list[PullRequest], str | None]:
         done = self.run(
             "pr", "list", "-R", self.slug, "--head", branch, "--state", "all",
-            "--json", "number,url,state,headRefOid,mergedAt,mergedBy,baseRefName,isDraft",
+            "--json",
+            "number,url,state,headRefOid,mergedAt,mergedBy,baseRefName,isDraft,isCrossRepository",
         )  # fmt: skip
         if done.returncode != 0:
             return [], (done.stderr or done.stdout).strip() or f"gh exit {done.returncode}"
@@ -1212,8 +1213,16 @@ class GitHub:
                 draft=bool(r.get("isDraft")),
             )
             for r in rows
+            if not r.get("isCrossRepository")  # --head cannot name an owner: a fork's is not ours
         ]
         return sorted(prs, key=lambda p: p.number), None
+
+    def make_draft(self, pr: PullRequest) -> str:
+        """Undo `ready` on a worker PR (ledger item 1143); pr.draft keeps what the agent opened."""
+        done = self.run("pr", "ready", str(pr.number), "-R", self.slug, "--undo")
+        if done.returncode:
+            return f"- {pr.url} was opened ready; making it a draft failed: {done.stderr.strip()}"
+        return f"- {pr.url} was opened ready; the worker made it a draft (ledger item 1143)"
 
     def read_ci(self, pr: PullRequest) -> None:
         """The PR's CI, from its checks, or from the Actions runs for its head when the token
@@ -1825,6 +1834,7 @@ class Worker:
             return Outcome(NOT_HANDED_BACK, note)
 
         prs, pr_err = gh.pull_requests(ws.branch)
+        drafted = [gh.make_draft(p) for p in prs if p.state.upper() == "OPEN" and not p.draft]
         if ended == "agent":
             self.wait_for_ci(gh, prs, beat)
         else:
@@ -1843,6 +1853,7 @@ class Worker:
         for pr in prs:
             lines.append(f"- {pr.url} ({pr.state.lower()}): CI {pr.ci}")
             lines.append(f"  from {pr.ci_source}" + (f": {pr.ci_detail}" if pr.ci_detail else ""))
+        lines.extend(drafted)
         if pr_err:
             lines.append(f"- the pull requests could not be listed: {pr_err}")
         for pr in prs:
