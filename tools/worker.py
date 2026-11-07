@@ -1415,10 +1415,11 @@ class Worker:
         self.skips_fired: set[tuple[str, int]] = set()
         self.skipped: list[tuple[str, int]] = []
         self.edited: list[tuple[dict, dict]] = []  # (item, the dispatch it was edited after)
-        # The authors this worker's own comments carry: its holder label (the owner's socket
-        # signs with it), and whatever the ledger recorded on a hand-back it posted (the
-        # machine's principal over QUIC, which the door stamps).
-        self.own_authors: set[str] = {self.cfg.holder}
+        # The authors the ledger recorded on the hand-backs this worker posted, and nothing
+        # else: the holder label is free text any writer can sign with, so it is no proof. A
+        # file, so a restarted worker still knows its own comments.
+        self.own_file = wc.loop_dir / "own-authors.json"
+        self.own_authors: set[str] = self.read_own_authors()
         self.skip_logged: dict[str, str] = {}
         u = wc.usage
         self.usage = worker_usage.UsageWatch(
@@ -1885,6 +1886,15 @@ class Worker:
         mine = [c for c in (fresh or {}).get("comments") or [] if c.get("text") == note]
         if mine and mine[-1].get("author"):
             self.own_authors.add(mine[-1]["author"])
+            self.own_file.parent.mkdir(parents=True, exist_ok=True)
+            self.own_file.write_text(json.dumps(sorted(self.own_authors)) + "\n", encoding="utf-8")
+
+    def read_own_authors(self) -> set[str]:
+        try:
+            found = json.loads(self.own_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return set()
+        return {a for a in found if isinstance(a, str)} if isinstance(found, list) else set()
 
     def release_if_ours(self, number: int, note: str) -> bool:
         """Post the note, then release only a claim that is still this worker's. The note is
