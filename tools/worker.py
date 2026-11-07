@@ -1010,7 +1010,9 @@ def review_refs(path: Path) -> tuple[dict[str, str], str | None]:
 def push_review_branches(path: Path, before: dict[str, str] | None = None) -> list[str]:
     """A reviewer's failing tests (review-once D3): push each local `review/pr-<n>` branch in the
     worktree to the same name on origin, never forced, and say what happened, one line each. Any
-    other branch under `review/` is named and left alone. The agent commits; only this pushes."""
+    other branch under `review/` is named and left alone. The agent commits; only this pushes.
+    Given `before` (the tips when the agent started), a branch it didn't make or move is
+    another item's, left in the shared clone, and is neither pushed nor named."""
     tips, err = review_refs(path)
     if err is not None:
         return [f"- review branches could not be listed: {err}"]
