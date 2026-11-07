@@ -352,8 +352,11 @@ class TheHolderOverrideAgainstARealGonk(unittest.TestCase):
                 return gonk.main([*argv, *extra]), out.getvalue()
 
         code, said = dispatch("--as", "urn:iki:gonk:passkey:somebody-else")
+        # gonk's wording of the refusal changes between releases (6206dbc spells out the graph and
+        # the import principal), so pin what it means: refused, and naming the author it refused.
         self.assertNotEqual(code, 0, said)
-        self.assertIn("only the door names one", said)
+        self.assertIn("denied", said)
+        self.assertIn("urn:iki:gonk:passkey:somebody-else", said)
         # With no `--as` the door names the machine itself, and this loop trusts that machine.
         code, said = dispatch()
         self.assertEqual(code, 0, said)
