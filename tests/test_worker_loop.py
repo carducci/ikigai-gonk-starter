@@ -285,6 +285,34 @@ class TheLoop(unittest.TestCase):
         self.assertFalse(fork["isDraft"])
         self.assertNotIn("pull/99 was opened ready", evidence_comments(self.ledger.items[n])[0])
 
+    def test_a_fork_pull_request_on_the_workers_branch_name_is_not_the_evidence(self):
+        made = worker.make_workspace
+
+        def make_workspace(*args, **kwargs):
+            ws = made(*args, **kwargs)
+            state = self.rig.gh()
+            state.setdefault("prs", []).append(
+                {
+                    "number": 99,
+                    "url": "https://github.com/acme/lib/pull/99",
+                    "state": "OPEN",
+                    "headRefName": ws.branch,
+                    "headRefOid": "0" * 40,
+                    "baseRefName": "main",
+                    "isDraft": True,
+                    "isCrossRepository": True,
+                }
+            )
+            self.rig.gh_state.write_text(json.dumps(state))
+            return ws
+
+        n = self.ledger.file("Fix the due dates", ["worker:w1", "repo:lib"])
+        with mock.patch.object(worker, "make_workspace", make_workspace):
+            self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/1\n"))
+        self.assertNotIn("pull/99", comment)
+
     def test_a_ledger_without_handback_still_gets_the_evidence(self):
         # A ledger older than 0.8.0 does not know `handback` and ignores it, writing the
         # comment: the evidence is never lost, and the `Evidence:` prefix is the hand-back
