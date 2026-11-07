@@ -604,8 +604,9 @@ worktree, no agent run, no pull request) and hands it back, once, with `handback
 comment containing "the brief changed after dispatch; dispatch it again" and the dispatch it
 compared against. The comment opens `Evidence: none.` (no URL, so the dispatcher sees a plain
 hand-back, and a ledger older than 0.8.0 reads it as one). It is once per dispatch: the
-marker is the item awaiting its dispatcher, or a hand-back comment written by this worker
-itself; the same words in anyone else's comment do not count. A new router dispatch pins the new
+marker is the item awaiting its dispatcher, or the worker's own record of the dispatches it
+has handed back (item and dispatch time, `handed-back.json` in the loop's state directory).
+No comment, and no author read back from the ledger, is ever the marker. A new router dispatch pins the new
 text and routes the item normally. `worker.py plan` lists such an item as `hand back`. The
 usage hold (`[usage]`) stops the worker taking new items, not this hand-back: it spends no
 agent time, and the hold can last until the weekly reset. A dispatch that is not by a router, does not name the worker's labels
