@@ -15,6 +15,7 @@ import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from support import ROOT, gonk, scratch_repo
 from worker_support import DISPATCHER, FakeLedger, Rig, git, worker
@@ -250,6 +251,67 @@ class TheLoop(unittest.TestCase):
         self.assertEqual(self.run_once().code, worker.HANDED_BACK)
         self.assertFalse(any(c[:2] == ["pr", "ready"] for c in self.rig.gh()["calls"]))
         self.assertNotIn("opened ready", evidence_comments(self.ledger.items[n])[0])
+
+    def test_a_fork_pull_request_on_the_workers_branch_name_is_not_made_a_draft(self):
+        # `gh pr list --head <branch>` cannot name an owner, so it lists a fork's pull request
+        # whose branch has the worker's name too: anyone may open one once the branch is pushed.
+        # It is not the worker's, and the worker must not change it with its token.
+        made = worker.make_workspace
+
+        def make_workspace(*args, **kwargs):
+            ws = made(*args, **kwargs)
+            state = self.rig.gh()
+            state.setdefault("prs", []).append(
+                {
+                    "number": 99,
+                    "url": "https://github.com/acme/lib/pull/99",
+                    "state": "OPEN",
+                    "headRefName": ws.branch,
+                    "headRefOid": "0" * 40,
+                    "baseRefName": "main",
+                    "isDraft": False,
+                    "isCrossRepository": True,
+                }
+            )
+            self.rig.gh_state.write_text(json.dumps(state))
+            return ws
+
+        n = self.ledger.file("Fix the due dates", ["worker:w1", "repo:lib"])
+        with mock.patch.object(worker, "make_workspace", make_workspace):
+            self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        calls = [c for c in self.rig.gh()["calls"] if c[:2] == ["pr", "ready"]]
+        self.assertFalse(any(c[2] == "99" for c in calls), calls)
+        [fork] = [pr for pr in self.rig.gh()["prs"] if pr["number"] == 99]
+        self.assertFalse(fork["isDraft"])
+        self.assertNotIn("pull/99 was opened ready", evidence_comments(self.ledger.items[n])[0])
+
+    def test_a_fork_pull_request_on_the_workers_branch_name_is_not_the_evidence(self):
+        made = worker.make_workspace
+
+        def make_workspace(*args, **kwargs):
+            ws = made(*args, **kwargs)
+            state = self.rig.gh()
+            state.setdefault("prs", []).append(
+                {
+                    "number": 99,
+                    "url": "https://github.com/acme/lib/pull/99",
+                    "state": "OPEN",
+                    "headRefName": ws.branch,
+                    "headRefOid": "0" * 40,
+                    "baseRefName": "main",
+                    "isDraft": True,
+                    "isCrossRepository": True,
+                }
+            )
+            self.rig.gh_state.write_text(json.dumps(state))
+            return ws
+
+        n = self.ledger.file("Fix the due dates", ["worker:w1", "repo:lib"])
+        with mock.patch.object(worker, "make_workspace", make_workspace):
+            self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertNotIn("pull/99", comment, comment)
+        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/"), comment)
 
     def test_a_ledger_without_handback_still_gets_the_evidence(self):
         # A ledger older than 0.8.0 does not know `handback` and ignores it, writing the
