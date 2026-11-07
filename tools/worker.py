@@ -1120,7 +1120,7 @@ class GitHub:
     def pull_requests(self, branch: str) -> tuple[list[PullRequest], str | None]:
         done = self.run(
             "pr", "list", "-R", self.slug, "--head", branch, "--state", "all",
-            "--json", "number,url,state,headRefOid,mergedAt,mergedBy,baseRefName,isDraft",
+            "--json", "number,url,state,headRefOid,mergedAt,mergedBy,baseRefName,isDraft,isCrossRepository",
         )  # fmt: skip
         if done.returncode != 0:
             return [], (done.stderr or done.stdout).strip() or f"gh exit {done.returncode}"
@@ -1140,6 +1140,7 @@ class GitHub:
                 draft=bool(r.get("isDraft")),
             )
             for r in rows
+            if not r.get("isCrossRepository")  # --head cannot name an owner: a fork's is not ours
         ]
         return sorted(prs, key=lambda p: p.number), None
 

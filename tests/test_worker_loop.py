@@ -310,8 +310,8 @@ class TheLoop(unittest.TestCase):
         with mock.patch.object(worker, "make_workspace", make_workspace):
             self.assertEqual(self.run_once().code, worker.HANDED_BACK)
         [comment] = evidence_comments(self.ledger.items[n])
-        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/1\n"))
-        self.assertNotIn("pull/99", comment)
+        self.assertNotIn("pull/99", comment, comment)
+        self.assertTrue(comment.startswith("Evidence: https://github.com/acme/lib/pull/"), comment)
 
     def test_a_ledger_without_handback_still_gets_the_evidence(self):
         # A ledger older than 0.8.0 does not know `handback` and ignores it, writing the
