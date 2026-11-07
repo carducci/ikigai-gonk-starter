@@ -74,6 +74,7 @@ import tempfile
 import threading
 import time
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -607,7 +608,7 @@ def awaiting_dispatcher(item: dict) -> bool:
     """
     if "awaiting" in item:
         return item.get("awaiting") == "dispatcher"
-    comments = sorted(item.get("comments") or [], key=lambda c: c.get("time") or "")
+    comments = sorted(item.get("comments") or [], key=lambda c: instant(c.get("time")) or EPOCH)
     return bool(comments) and (comments[-1].get("text") or "").startswith("Evidence:")
 
 
@@ -640,7 +641,7 @@ def dispatch_problem(item: dict, routers: list[str], labels: list[str]) -> str |
             "no dispatch by a router (its labels say nothing about who set them; a router "
             "dispatches with `gonk.py dispatch`)"
         )
-    newest = max(dispatches, key=lambda c: c.get("time") or "")
+    newest = max(dispatches, key=lambda c: instant(c.get("time")) or EPOCH)
     named, digest = gonk.parse_dispatch(newest.get("text") or "")
     by = f"{newest.get('author')} at {newest.get('time')}"
     need = list(dict.fromkeys([*labels, *(f"repo:{r}" for r in repo_labels(item))]))
@@ -660,6 +661,77 @@ def dispatch_problem(item: dict, routers: list[str], labels: list[str]) -> str |
     return None
 
 
+BRIEF_CHANGED = "the brief changed after dispatch; dispatch it again"
+# `Evidence:` first, so a ledger older than 0.8.0 (no `awaiting`) reads the hand-back from the text.
+EDIT_HAND_BACK_PREFIXES = ("Evidence: none", "gonk worker")
+EPOCH = datetime.min.replace(tzinfo=UTC)
+
+
+def instant(text: str | None) -> datetime | None:
+    """A ledger time as an instant, or None when it does not parse. Instants are compared as
+    instants, never as strings: `.250Z` sorts before `Z` as text and after it as time."""
+    try:
+        return gonk.parse_instant(text or "")
+    except ValueError:
+        return None
+
+
+def is_edit_hand_back(comment: dict, own: Iterable[str]) -> bool:
+    """Whether `comment` is this worker's own hand-back of an edited item: it says so, and its
+    author is one of `own` (the holder label over the owner's socket, the machine's principal
+    over QUIC). A phrase in anyone else's comment is not the worker's word."""
+    text = comment.get("text") or ""
+    if BRIEF_CHANGED not in text or not text.startswith(EDIT_HAND_BACK_PREFIXES):
+        return False
+    author = comment.get("author") or ""
+    return any(author == a or gonk.same_principal(author, a) for a in own)
+
+
+def edited_dispatch(
+    item: dict,
+    routers: list[str],
+    labels: list[str],
+    own: Iterable[str] = (),
+    handed: Iterable[tuple[int, str]] = (),
+) -> dict | None:
+    """The newest router dispatch, when it was addressed to this worker and only the brief has
+    changed since, and the item has not been handed back for it yet; else None.
+
+    Addressed to this worker means what `dispatch_problem` checks first: a dispatch by a router
+    that names every label this worker selects on and the item's `repo:` label, and pins a
+    digest. Anything less was never sent here, so it stays a silent skip: a hand-back would let
+    anyone who can edit an item make every loop comment on it. Once per dispatch: the item
+    waiting for its dispatcher (the ledger's `awaiting` state, or the `Evidence:` prefix on a
+    ledger without it) is handed back, and a dispatch the worker has already handed back
+    (`handed`: its own record of (item number, dispatch time), kept in the loop's directory) is
+    the answer already given, even after the dispatcher spoke without dispatching again. No
+    author read back from the ledger is the marker: the worker passes no `own`, which exists
+    only for a caller that vouches for its authors. A new dispatch pins the new digest, so it
+    routes the item as usual."""
+    dispatches = [
+        c
+        for c in item.get("comments") or []
+        if gonk.parse_dispatch(c.get("text") or "") is not None and by_router(c, routers)
+    ]
+    if not dispatches or awaiting_dispatcher(item):
+        return None
+    newest = max(dispatches, key=lambda c: instant(c.get("time")) or EPOCH)
+    named, digest = gonk.parse_dispatch(newest.get("text") or "")
+    need = [*labels, *(f"repo:{r}" for r in repo_labels(item))]
+    if digest is None or any(w not in named for w in need):
+        return None
+    if digest == gonk.brief_digest(item.get("title"), item.get("body")):
+        return None
+    sent_at = instant(newest.get("time"))
+    for c in item.get("comments") or []:
+        at = instant(c.get("time"))
+        if is_edit_hand_back(c, own) and at and sent_at and at > sent_at:
+            return None
+    if (item.get("number"), newest.get("time")) in set(handed):
+        return None
+    return newest
+
+
 CONTINUE_PR = re.compile(r"\bContinue draft PR (?:([A-Za-z0-9-]+/[A-Za-z0-9._-]+))?#(\d+)\b")
 
 
@@ -671,7 +743,7 @@ def continued_pr(item: dict, routers: list[str]) -> tuple[str | None, int] | Non
     never outranks it, and a comment by anyone else is data, and never stacks the work."""
     texts = [item.get("title") or "", item.get("body") or ""]
     later: list[str] = []
-    for c in sorted(item.get("comments") or [], key=lambda c: c.get("time") or ""):
+    for c in sorted(item.get("comments") or [], key=lambda c: instant(c.get("time")) or EPOCH):
         text = c.get("text") or ""
         if not by_router(c, routers) or text.startswith(HAND_BACK_PREFIXES):
             continue
@@ -1276,7 +1348,7 @@ def brief_comments(item: dict, routers: list[str] | None = None) -> str:
     the item itself out of the prompt.
     """
     routers = routers or []
-    comments = sorted(item.get("comments") or [], key=lambda c: c.get("time") or "")
+    comments = sorted(item.get("comments") or [], key=lambda c: instant(c.get("time")) or EPOCH)
     entries: list[tuple[int, bool, dict, str]] = []
     newest_dispatch = -1
     for at, comment in enumerate(comments):
@@ -1330,6 +1402,9 @@ def brief_comments(item: dict, routers: list[str] | None = None) -> str:
     return "\n\n" + "\n\n".join(out) + "\n"
 
 
+LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
 def brief(
     item: dict,
     ledger: str,
@@ -1369,7 +1444,8 @@ def brief(
     else:
         out = f"{text}\n# {title}\n\n{comments}" if comments else f"{text}\n# {title}\n"
     # A NUL cannot be in an argv word (execve ends the string there; Popen raises ValueError).
-    return out.replace("\x00", "�")
+    # Nor can a lone surrogate be encoded as UTF-8 (json.loads turns "\udc00" into one).
+    return LONE_SURROGATE.sub("�", out.replace("\x00", "�"))
 
 
 def agent_argv(command: list[str], values: dict[str, str]) -> list[str]:
@@ -1430,6 +1506,12 @@ class Worker:
         # the loop asks again at every poll and a skip that has not changed is not news.
         self.skips_fired: set[tuple[str, int]] = set()
         self.skipped: list[tuple[str, int]] = []
+        self.edited: list[tuple[dict, dict]] = []  # (item, the dispatch it was edited after)
+        # The authors the ledger recorded on the hand-backs this worker posted, and nothing
+        # else: the holder label is free text any writer can sign with, so it is no proof. A
+        # file, so a restarted worker still knows its own comments.
+        self.handed_file = wc.loop_dir / "handed-back.json"
+        self.handed: set[tuple[int, str]] = self.read_handed()
         self.skip_logged: dict[str, str] = {}
         u = wc.usage
         self.usage = worker_usage.UsageWatch(
@@ -1454,6 +1536,7 @@ class Worker:
         take, skip = [], []
         busy: dict[str, str | None] = {}
         self.skipped = []
+        self.edited = self.edited_items(doc)
         for ranked in doc.get("ranking", []):
             item = ranked["item"]
             display = item.get("display", f"#{item.get('number')}")
@@ -1469,6 +1552,21 @@ class Worker:
             else:
                 take.append((item, self.wc.repos[repo_labels(item)[0]]))
         return take, skip, None
+
+    def edited_items(self, doc: dict) -> list[tuple[dict, dict]]:
+        """(item, the dispatch it was edited after) for each unclaimed item of one repository
+        of this worker's that `run_once` will hand back. A query of its own: `skip_reason`
+        stays a pure question, and `candidates` (so `plan`) and the held `run_once` both ask."""
+        found = []
+        for ranked in doc.get("ranking", []):
+            item = ranked["item"]
+            repos = repo_labels(item)
+            if item.get("claim") or len(repos) != 1 or repos[0] not in self.wc.repos:
+                continue
+            sent = edited_dispatch(item, self.wc.routers, self.wc.labels, handed=self.handed)
+            if sent:
+                found.append((item, sent))
+        return found
 
     def why_not(self, item: dict, now: datetime, busy: dict) -> str | None:
         reason = self.skip_reason(item, now, busy)
@@ -1550,6 +1648,11 @@ class Worker:
     def run_once(self) -> Outcome:
         held = self.usage.check()
         if held:
+            # The hold is on taking a NEW item. A hand-back spends no agent time, and the hold
+            # can last until the weekly reset, so an edited item still goes back meanwhile.
+            doc, _ = self.ledger.next(self.wc.labels, self.wc.without)
+            for item, sent in self.edited_items(doc or {}):
+                self.hand_back_edited(item, sent)
             return Outcome(NOTHING, held)
         take, skip, err = self.candidates()
         if err:
@@ -1561,6 +1664,8 @@ class Worker:
                 log(f"skip {display}: {why}")
         for control, number in self.skipped:
             self.fire_skip(control, number)
+        for item, sent in self.edited:
+            self.hand_back_edited(item, sent)
         for item, repo in take:
             lock = RepoLock(self.wc.state_dir, repo.name, self.wc.max_per_repo)
             if not lock.acquire():
@@ -1859,6 +1964,45 @@ class Worker:
         """
         return self.ledger.comment(number, text, handback="true")
 
+    def hand_back_edited(self, item: dict, sent: dict) -> None:
+        """Hand back an item whose title or body changed after its dispatch: no claim, no
+        worktree, no agent, and no evidence. The dispatcher sees a plain hand-back and answers
+        it by dispatching the item again."""
+        number, display = item["number"], item.get("display")
+        text = sent.get("text") or ""
+        marks = fence(text)
+        note = (
+            f"Evidence: none. gonk worker `{self.cfg.holder}` hands {display} back without "
+            f"evidence: {BRIEF_CHANGED}. Compared against the dispatch by {sent.get('author')} "
+            f"at {sent.get('time')}:\n\n{marks}text\n{text}\n{marks}"
+        )
+        answer = self.hand_back(number, note)
+        if not answer.ok:
+            log(f"could not hand {display} back: {answer.text()}")
+            return
+        log(f"handed {display} back: {BRIEF_CHANGED}")
+        # Remember which dispatch was answered, in a record of this loop's own: nothing read
+        # back from the ledger says who wrote a comment, so nothing there can be the marker.
+        self.handed.add((number, sent.get("time") or ""))
+        self.handed_file.parent.mkdir(parents=True, exist_ok=True)
+        self.handed_file.write_text(json.dumps(sorted(self.handed)) + "\n", encoding="utf-8")
+
+    def read_handed(self) -> set[tuple[int, str]]:
+        try:
+            found = json.loads(self.handed_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return set()
+        if not isinstance(found, list):
+            return set()
+        return {
+            (e[0], e[1])
+            for e in found
+            if isinstance(e, list)
+            and len(e) == 2
+            and isinstance(e[0], int)
+            and isinstance(e[1], str)
+        }
+
     def release_if_ours(self, number: int, note: str) -> bool:
         """Post the note, then release only a claim that is still this worker's. The note is
         always a comment of its own, posted first, whoever holds the claim: one handed to the
@@ -1985,8 +2129,12 @@ def cmd_plan(args, make_ikigai, home) -> int:
         return ERROR
     for item, repo in take:
         print(f"take  {item.get('display')}  repo:{repo.name}  {item.get('title')}")
+    handed = {item.get("display") for item, _ in worker.edited}
+    for item, _ in worker.edited:
+        print(f"hand back  {item.get('display')}  {BRIEF_CHANGED}; `run` comments on it, once")
     for display, why in skip:
-        print(f"skip  {display}  {why}")
+        if display not in handed:
+            print(f"skip  {display}  {why}")
     if not take and not skip:
         print(f"nothing ready with labels {','.join(worker.wc.labels)}")
     return 0 if take else NOTHING

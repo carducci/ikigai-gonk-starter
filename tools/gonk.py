@@ -311,7 +311,7 @@ def brief_digest(title: str | None, body: str | None) -> str:
     'a7e165a38ffa1705'
     """
     text = (title or "") + "\n" + (body or "")
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(text.encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
 def dispatch_text(labels: list[str], title: str | None, body: str | None) -> str:
