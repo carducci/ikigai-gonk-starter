@@ -597,6 +597,22 @@ router's later dispatch elsewhere spends its earlier one; a dispatch by anyone e
 signs itself, counts for nothing; and an edit to the title or body after the dispatch stops the
 item until a router dispatches it again, which is also how a dispatcher sends an edited item.
 
+An item **edited after a dispatch addressed to this worker** (the newest router dispatch names
+the worker's labels and the item's `repo:` label and pins a digest, and only the digest
+differs) is not skipped in silence: the worker takes no other action on it (no claim, no
+worktree, no agent run, no pull request) and hands it back, once, with `handback=true` and a
+comment containing "the brief changed after dispatch; dispatch it again" and the dispatch it
+compared against. The comment opens `Evidence: none.` (no URL, so the dispatcher sees a plain
+hand-back, and a ledger older than 0.8.0 reads it as one). It is once per dispatch: the
+marker is the item awaiting its dispatcher, or the worker's own record of the dispatches it
+has handed back (item and dispatch time, `handed-back.json` in the loop's state directory).
+No comment, and no author read back from the ledger, is ever the marker. A new router dispatch pins the new
+text and routes the item normally. `worker.py plan` lists such an item as `hand back`. The
+usage hold (`[usage]`) stops the worker taking new items, not this hand-back: it spends no
+agent time, and the hold can last until the weekly reset. A dispatch that is not by a router, does not name the worker's labels
+or the `repo:` label, or pins no digest is still a silent skip: the item was never addressed
+here, and a hand-back would let anyone who can edit an item make every loop comment on it.
+
 In the worker's configuration, the one key to add (each loop's file, on a machine with one
 loop per agent):
 
