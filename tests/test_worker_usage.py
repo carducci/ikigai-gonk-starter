@@ -130,6 +130,17 @@ class InTheLoop(unittest.TestCase):
         self.assertIsNone(self.ledger.items[self.item]["claim"])
         self.assertEqual(self.ledger.human_comments(self.item), [])
 
+    def test_the_hold_does_not_stop_the_hand_back_of_an_edited_item(self):
+        self.ledger.items[self.item]["body"] = "Edited after the dispatch."
+        w, outcome = self.run_with('{"percent": 90}')
+        self.assertEqual(outcome.code, worker.NOTHING)
+        self.assertIsNone(self.ledger.items[self.item]["claim"])
+        self.assertEqual(self.ledger.items[self.item]["awaiting"], "dispatcher")
+        said = [c for c in self.ledger.human_comments(self.item) if "brief changed" in c["text"]]
+        self.assertEqual(len(said), 1)
+        w.run_once()
+        self.assertEqual(len(self.ledger.human_comments(self.item)), 1)
+
     def test_under_the_threshold_works_the_item(self):
         w, outcome = self.run_with('{"percent": 10}')
         self.assertNotEqual(outcome.code, worker.NOTHING)
