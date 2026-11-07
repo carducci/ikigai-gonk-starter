@@ -234,6 +234,23 @@ class TheLoop(unittest.TestCase):
             self.assertIn(rule, prompt)
         self.assertTrue(prompt.rstrip().endswith("# Fix the due dates\n\nThey are off."))
 
+    def test_a_ready_pull_request_that_cannot_be_made_a_draft_is_named(self):
+        state = self.rig.gh()
+        state["ready"] = "refused"
+        self.rig.gh_state.write_text(json.dumps(state))
+        n = self.ledger.file("Fix the due dates", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertIn("pull/1 was opened ready; making it a draft failed: GraphQL", comment)
+        self.assertFalse(self.rig.gh()["prs"][0]["isDraft"])
+
+    def test_a_draft_pull_request_is_left_as_it_is(self):
+        self.rig.agent_flags = ["--draft-base", "main"]
+        n = self.ledger.file("Fix the due dates", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        self.assertFalse(any(c[:2] == ["pr", "ready"] for c in self.rig.gh()["calls"]))
+        self.assertNotIn("opened ready", evidence_comments(self.ledger.items[n])[0])
+
     def test_a_ledger_without_handback_still_gets_the_evidence(self):
         # A ledger older than 0.8.0 does not know `handback` and ignores it, writing the
         # comment: the evidence is never lost, and the `Evidence:` prefix is the hand-back
