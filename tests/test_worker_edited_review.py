@@ -9,7 +9,7 @@ import contextlib
 import io
 import unittest
 
-from worker_support import DISPATCHER, FakeLedger, Rig
+from worker_support import DISPATCHER, FakeLedger, Rig, worker
 
 SAID = "the brief changed after dispatch; dispatch it again"
 
