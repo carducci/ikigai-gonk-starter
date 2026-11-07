@@ -1143,6 +1143,10 @@ class GitHub:
         ]
         return sorted(prs, key=lambda p: p.number), None
 
+    def make_draft(self, pr: PullRequest) -> bool:
+        """Undo `ready` on a worker PR (ledger item 1143); pr.draft keeps what the agent opened."""
+        return self.run("pr", "ready", str(pr.number), "-R", self.slug, "--undo").returncode == 0
+
     def read_ci(self, pr: PullRequest) -> None:
         """The PR's CI, from its checks, or from the Actions runs for its head when the token
         may not read checks (a fine-grained token: GitHub offers no Checks permission for one).
@@ -1702,6 +1706,8 @@ class Worker:
             return Outcome(NOT_HANDED_BACK, note)
 
         prs, pr_err = gh.pull_requests(ws.branch)
+        for p in [p for p in prs if p.state.upper() == "OPEN" and not p.draft]:
+            gh.make_draft(p)
         if ended == "agent":
             self.wait_for_ci(gh, prs, beat)
         else:
