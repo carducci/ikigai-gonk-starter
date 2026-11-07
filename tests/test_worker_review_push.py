@@ -91,8 +91,8 @@ class PushReviewBranches(unittest.TestCase):
 
     def test_a_reviewer_loop_pushes_and_a_coder_loop_does_not(self):
         src = (ROOT / "tools" / "worker.py").read_text()
-        wired = 'review_lines = push_review_branches(ws.path) if "review" in self.wc.labels else []'
-        self.assertIn(wired, src)
+        self.assertIn('review_before = review_refs(ws.path)[0] if "review" in self.wc.labels', src)
+        self.assertIn("else push_review_branches(ws.path, review_before)", src)
 
 
 if __name__ == "__main__":

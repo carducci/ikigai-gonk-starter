@@ -1007,7 +1007,7 @@ def review_refs(path: Path) -> tuple[dict[str, str], str | None]:
     return dict(line.split(" ", 1) for line in refs.stdout.splitlines() if " " in line), None
 
 
-def push_review_branches(path: Path) -> list[str]:
+def push_review_branches(path: Path, before: dict[str, str] | None = None) -> list[str]:
     """A reviewer's failing tests (review-once D3): push each local `review/pr-<n>` branch in the
     worktree to the same name on origin, never forced, and say what happened, one line each. Any
     other branch under `review/` is named and left alone. The agent commits; only this pushes."""
@@ -1015,7 +1015,9 @@ def push_review_branches(path: Path) -> list[str]:
     if err is not None:
         return [f"- review branches could not be listed: {err}"]
     lines = []
-    for name in tips:
+    for name, tip in tips.items():
+        if before is not None and before.get(name) == tip:
+            continue
         if not REVIEW_BRANCH.fullmatch(name):
             lines.append(f"- review branch {name}: not pushed (only review/pr-<n> is)")
             continue
@@ -1812,6 +1814,7 @@ class Worker:
                 "{profile}": self.wc.profile or "",
             },
         )
+        review_before = review_refs(ws.path)[0] if "review" in self.wc.labels else None
         log(f"{display}: running `{argv[0]}` in {ws.path} on {ws.branch} (log {ws.log})")
         started = time.monotonic()
         with ws.log.open("w", encoding="utf-8") as out:
@@ -1891,7 +1894,7 @@ class Worker:
             return Outcome(NOT_HANDED_BACK, note.splitlines()[0], prs=prs)
 
         # A reviewer's failing tests go up before anything else is reported (review-once).
-        review_lines = push_review_branches(ws.path) if "review" in self.wc.labels else []
+        review_lines = [] if review_before is None else push_review_branches(ws.path, review_before)
         evidence = prs[0].url if prs else self.reported_evidence(ws)
         if not evidence:
             gonk.fire("worker-no-evidence", "refusal", self.cfg.repo)
