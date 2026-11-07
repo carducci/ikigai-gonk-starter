@@ -639,7 +639,11 @@ def is_edit_hand_back(comment: dict, own: Iterable[str]) -> bool:
 
 
 def edited_dispatch(
-    item: dict, routers: list[str], labels: list[str], own: Iterable[str] = ()
+    item: dict,
+    routers: list[str],
+    labels: list[str],
+    own: Iterable[str] = (),
+    handed: Iterable[tuple[int, str]] = (),
 ) -> dict | None:
     """The newest router dispatch, when it was addressed to this worker and only the brief has
     changed since, and the item has not been handed back for it yet; else None.
@@ -649,10 +653,12 @@ def edited_dispatch(
     digest. Anything less was never sent here, so it stays a silent skip: a hand-back would let
     anyone who can edit an item make every loop comment on it. Once per dispatch: the item
     waiting for its dispatcher (the ledger's `awaiting` state, or the `Evidence:` prefix on a
-    ledger without it) is handed back, and a hand-back comment by this worker (an `own` author)
-    newer than the dispatch is the answer already given, even after the dispatcher spoke
-    without dispatching again. A comment by anyone else is never the marker. A new dispatch
-    pins the new digest, so it routes the item as usual."""
+    ledger without it) is handed back, and a dispatch the worker has already handed back
+    (`handed`: its own record of (item number, dispatch time), kept in the loop's directory) is
+    the answer already given, even after the dispatcher spoke without dispatching again. No
+    author read back from the ledger is the marker: the worker passes no `own`, which exists
+    only for a caller that vouches for its authors. A new dispatch pins the new digest, so it
+    routes the item as usual."""
     dispatches = [
         c
         for c in item.get("comments") or []
@@ -672,6 +678,8 @@ def edited_dispatch(
         at = instant(c.get("time"))
         if is_edit_hand_back(c, own) and at and sent_at and at > sent_at:
             return None
+    if (item.get("number"), newest.get("time")) in set(handed):
+        return None
     return newest
 
 
@@ -1418,8 +1426,8 @@ class Worker:
         # The authors the ledger recorded on the hand-backs this worker posted, and nothing
         # else: the holder label is free text any writer can sign with, so it is no proof. A
         # file, so a restarted worker still knows its own comments.
-        self.own_file = wc.loop_dir / "own-authors.json"
-        self.own_authors: set[str] = self.read_own_authors()
+        self.handed_file = wc.loop_dir / "handed-back.json"
+        self.handed: set[tuple[int, str]] = self.read_handed()
         self.skip_logged: dict[str, str] = {}
         u = wc.usage
         self.usage = worker_usage.UsageWatch(
@@ -1466,7 +1474,7 @@ class Worker:
             repos = repo_labels(item)
             if item.get("claim") or len(repos) != 1 or repos[0] not in self.wc.repos:
                 continue
-            sent = edited_dispatch(item, self.wc.routers, self.wc.labels, self.own_authors)
+            sent = edited_dispatch(item, self.wc.routers, self.wc.labels, handed=self.handed)
             if sent:
                 found.append((item, sent))
         return found
@@ -1880,21 +1888,27 @@ class Worker:
             log(f"could not hand {display} back: {answer.text()}")
             return
         log(f"handed {display} back: {BRIEF_CHANGED}")
-        # Learn the author the ledger recorded on it: on a door that stamps a principal, that
-        # is the only thing that tells this worker's comment from a copy of its words.
-        fresh, _ = self.ledger.item(number)
-        mine = [c for c in (fresh or {}).get("comments") or [] if c.get("text") == note]
-        if mine and mine[-1].get("author"):
-            self.own_authors.add(mine[-1]["author"])
-            self.own_file.parent.mkdir(parents=True, exist_ok=True)
-            self.own_file.write_text(json.dumps(sorted(self.own_authors)) + "\n", encoding="utf-8")
+        # Remember which dispatch was answered, in a record of this loop's own: nothing read
+        # back from the ledger says who wrote a comment, so nothing there can be the marker.
+        self.handed.add((number, sent.get("time") or ""))
+        self.handed_file.parent.mkdir(parents=True, exist_ok=True)
+        self.handed_file.write_text(json.dumps(sorted(self.handed)) + "\n", encoding="utf-8")
 
-    def read_own_authors(self) -> set[str]:
+    def read_handed(self) -> set[tuple[int, str]]:
         try:
-            found = json.loads(self.own_file.read_text(encoding="utf-8"))
+            found = json.loads(self.handed_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return set()
-        return {a for a in found if isinstance(a, str)} if isinstance(found, list) else set()
+        if not isinstance(found, list):
+            return set()
+        return {
+            (e[0], e[1])
+            for e in found
+            if isinstance(e, list)
+            and len(e) == 2
+            and isinstance(e[0], int)
+            and isinstance(e[1], str)
+        }
 
     def release_if_ours(self, number: int, note: str) -> bool:
         """Post the note, then release only a claim that is still this worker's. The note is
