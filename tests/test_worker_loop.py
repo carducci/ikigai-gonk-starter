@@ -213,6 +213,7 @@ class TheLoop(unittest.TestCase):
         self.assertFalse(any(":close " in c for c, _ in self.ledger.calls))
         self.assertEqual(self.rig.gh()["forbidden"], [])
         self.assertTrue(self.rig.gh()["prs"][0]["isDraft"])  # opened ready, made a draft
+        self.assertIn("pull/1 was opened ready; the worker made it a draft", comment)
 
         # The agent ran in a fresh worktree under the work root, on a branch of its own that
         # reached the origin, with the fixed preamble ahead of the item; the worktree is gone.
