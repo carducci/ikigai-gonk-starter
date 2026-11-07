@@ -751,6 +751,23 @@ class TheLoop(unittest.TestCase):
         self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
         self.assertNotIn("\x00", self.rig.prompt(n))
 
+    def test_a_lone_surrogate_in_the_items_text_is_replaced_not_raised(self):
+        for where in ("comment", "title", "body"):
+            with self.subTest(where=where):
+                bad = "x\udc00y"
+                n = self.ledger.file(
+                    bad if where == "title" else "T",
+                    ["worker:w1", "repo:lib"],
+                    body=bad if where == "body" else "b",
+                )
+                if where == "comment":
+                    self.ledger.add_comment(n, f"Correction: {bad}")
+                outcome = self.run_once()
+                self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+                prompt = self.rig.prompt(n)
+                self.assertNotIn("\udc00", prompt)
+                self.assertIn("x�y", prompt)
+
     def test_a_second_run_of_one_item_gets_a_fresh_directory(self):
         n = self.ledger.file("Again", ["worker:w1", "repo:lib"])
         self.assertEqual(self.run_once(keep="true").code, worker.HANDED_BACK)
