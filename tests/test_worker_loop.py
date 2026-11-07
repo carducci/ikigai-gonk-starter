@@ -577,6 +577,23 @@ class TheLoop(unittest.TestCase):
         [comment] = evidence_comments(self.ledger.items[n])
         self.assertIn("Finding 59.\nVerdict: schedule\n", comment)
 
+    def test_findings_jsonl_is_appended_whole_in_a_findings_block(self):
+        rows = "".join(f'{{"n": {i}}}\n' for i in range(1, 61))
+        self.rig.agent_flags = ["--report", "Verdict: discuss\n", "--findings", rows]
+        n = self.ledger.file("Sixty findings", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        block = comment.split("```findings\n", 1)[1].split("\n```", 1)[0]
+        self.assertEqual(block, rows.rstrip("\n"))  # all 60 lines, past the 40-line cut
+        self.assertIn("The agent's report:\nVerdict: discuss\n", comment)
+
+    def test_no_findings_file_means_no_findings_block(self):
+        self.rig.agent_flags = ["--report", "Verdict: discuss\n"]
+        n = self.ledger.file("No findings", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertNotIn("```findings", comment)
+
     def test_a_pull_request_with_no_report_hands_back_its_pr_lines_alone(self):
         self.rig.agent_flags = ["--say", "Done: see the PR."]
         n = self.ledger.file("No report", ["worker:w1", "repo:lib"])
