@@ -15,6 +15,7 @@ import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from support import ROOT, gonk, scratch_repo
 from worker_support import DISPATCHER, FakeLedger, Rig, git, worker
@@ -750,6 +751,86 @@ class TheLoop(unittest.TestCase):
         outcome = self.run_once()
         self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
         self.assertNotIn("\x00", self.rig.prompt(n))
+
+    def test_an_item_whose_dispatch_check_raises_is_skipped_and_logged_once(self):
+        bad = self.ledger.file("Bad check", ["worker:w1", "repo:lib"])
+        good = self.ledger.file("Clean", ["worker:w1", "repo:lib"])
+        real = worker.dispatch_problem
+
+        def raising(item, *args):
+            if item["number"] == bad:
+                raise RuntimeError("the check broke")
+            return real(item, *args)
+
+        self.rig.configure()
+        w = self.rig.worker(self.ledger)
+        out = io.StringIO()
+        with (
+            mock.patch.object(worker, "dispatch_problem", raising),
+            contextlib.redirect_stdout(out),
+        ):
+            take, skip, _ = w.candidates()
+            self.assertEqual([i["number"] for i, _ in take], [good])
+            self.assertIn("RuntimeError: the check broke", dict(skip)[f"acme#{bad}"])
+            self.assertEqual(w.run_once().code, worker.HANDED_BACK)
+            self.assertEqual(w.run_once().code, worker.NOTHING)
+        self.assertEqual(out.getvalue().count(f"skip acme#{bad}: its check raised"), 1)
+        self.assertEqual(len(evidence_comments(self.ledger.items[good])), 1)
+        self.assertEqual(evidence_comments(self.ledger.items[bad]), [])
+
+    def test_the_loop_survives_a_pass_that_raises(self):
+        self.rig.configure()
+        w = self.rig.worker(self.ledger)
+        calls = []
+
+        def once():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            w.shutdown.set()
+            return worker.Outcome(worker.NOTHING, "nothing")
+
+        w.run_once = once
+        w.wc.poll = 0
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(w.loop(), 0)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("a pass raised RuntimeError: boom", out.getvalue())
+
+    def test_a_dispatch_check_that_raises_after_the_claim_releases_the_claim(self):
+        # The check runs again on the fresh read after the claim (Worker.work), outside the try
+        # that hands an item back. A raise there must not leave the item claimed by this worker:
+        # the loop goes on, but the item stays held, with no note, until someone takes it over.
+        n = self.ledger.file("Raises after the claim", ["worker:w1", "repo:lib"])
+        real = worker.dispatch_problem
+        checks = []
+
+        def raising(item, *args):
+            checks.append(item["number"])
+            if len(checks) > 1:
+                raise RuntimeError("the check broke")
+            return real(item, *args)
+
+        self.rig.configure()
+        w = self.rig.worker(self.ledger)
+        w.wc.poll = 0
+        once, passes = w.run_once, []
+
+        def counted():
+            passes.append(1)
+            if len(passes) > 1:
+                w.shutdown.set()
+            return once()
+
+        w.run_once = counted
+        with mock.patch.object(worker, "dispatch_problem", raising):
+            try:
+                w.loop()
+            except RuntimeError as e:
+                self.fail(f"the loop ended on {e!r}")
+        self.assertGreaterEqual(len(checks), 2, "the check never ran after the claim")
+        self.assertIsNone(self.ledger.items[n]["claim"], "the worker still holds the item")
 
     def test_a_lone_surrogate_in_the_items_text_is_replaced_not_raised(self):
         for where in ("comment", "title", "body"):

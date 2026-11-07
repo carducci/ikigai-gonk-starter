@@ -1540,7 +1540,12 @@ class Worker:
         for ranked in doc.get("ranking", []):
             item = ranked["item"]
             display = item.get("display", f"#{item.get('number')}")
-            reason = self.skip_reason(item, now, busy)
+            try:
+                reason = self.skip_reason(item, now, busy)
+            except Exception as e:  # noqa: BLE001  (one bad item must not end the pass)
+                # Skipped for this pass and logged; no sensor names a crashed check.
+                skip.append((display, f"its check raised {type(e).__name__}: {e}"))
+                continue
             if reason:
                 skip.append((display, reason[1]))
                 self.skipped.append((reason[0], item.get("number")))
@@ -1676,12 +1681,10 @@ class Worker:
                 lock.release()
         return Outcome(NOTHING, "nothing to take")
 
-    def work(self, item: dict, repo: Repo) -> Outcome:
-        number, display, holder = item["number"], item.get("display"), self.cfg.holder
-        answer = self.ledger.claim(number, holder, self.wc.lease)
-        if not answer.ok:
-            return Outcome(NOTHING, f"could not claim {display}: {answer.text()}", number)
-        log(f"claimed {display} for `{holder}` on a {self.wc.lease} lease (repo:{repo.name})")
+    def vet_claim(self, number: int, display: str | None, repo: Repo) -> dict | Outcome:
+        """The checks after a claim: the item as it is now, or the Outcome of backing off (the
+        claim released). A raise is the caller's to turn into a hand-back."""
+        holder = self.cfg.holder
         other = self.repo_holder(repo.name, gonk.iso_now(), exclude=number)
         if other:
             self.fire_skip(gonk.sensor("worker-one-agent-per-repository"), number)
@@ -1705,10 +1708,29 @@ class Worker:
             self.fire_skip(gonk.sensor("worker-dispatched-by-a-router"), number)
             self.ledger.release(number, holder)
             return Outcome(NOTHING, f"backed off {display}: {problem}")
-        item = fresh
-        beat = Heartbeat(self.ledger, number, holder, self.wc.lease, self.wc.renew_every)
-        beat.start()
+        return fresh
+
+    def work(self, item: dict, repo: Repo) -> Outcome:
+        number, display, holder = item["number"], item.get("display"), self.cfg.holder
+        answer = self.ledger.claim(number, holder, self.wc.lease)
+        if not answer.ok:
+            return Outcome(NOTHING, f"could not claim {display}: {answer.text()}", number)
+        log(f"claimed {display} for `{holder}` on a {self.wc.lease} lease (repo:{repo.name})")
         try:
+            vetted = self.vet_claim(number, display, repo)
+        except Exception as e:  # noqa: BLE001  (a check that raises after the claim hands it back)
+            note = (
+                f"gonk worker `{holder}` failed on {display} before starting and hands it "
+                f"back: {type(e).__name__}: {e}"
+            )
+            self.release_if_ours(number, note)
+            return Outcome(ERROR, note, number)
+        if isinstance(vetted, Outcome):
+            return vetted
+        item = vetted
+        beat = Heartbeat(self.ledger, number, holder, self.wc.lease, self.wc.renew_every)
+        try:
+            beat.start()
             outcome = self.work_claimed(item, repo, beat)
         except Exception as e:  # noqa: BLE001  (any failure after the claim hands the item back)
             beat.stop()
@@ -2032,7 +2054,10 @@ class Worker:
             if stop is not None:
                 log(f"stopping: {stop} exists (remove it to run again)")
                 return 0
-            outcome = self.run_once()
+            try:
+                outcome = self.run_once()
+            except Exception as e:  # noqa: BLE001  (a pass that raised ends the pass, not the worker)
+                outcome = Outcome(ERROR, f"a pass raised {type(e).__name__}: {e}")
             if outcome.code in (NOTHING, ERROR):
                 if outcome.code == ERROR:
                     log(outcome.summary)
