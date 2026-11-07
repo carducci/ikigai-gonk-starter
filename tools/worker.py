@@ -998,15 +998,24 @@ def said(done: subprocess.CompletedProcess) -> str:
     return (done.stderr or done.stdout).strip()[-200:]
 
 
+def review_refs(path: Path) -> tuple[dict[str, str], str | None]:
+    """Each local branch under `review/` with its tip, or why they could not be listed."""
+    fmt = "--format=%(refname:short) %(objectname)"
+    refs = git("for-each-ref", fmt, "refs/heads/review/", cwd=path)
+    if refs.returncode != 0:
+        return {}, said(refs)
+    return dict(line.split(" ", 1) for line in refs.stdout.splitlines() if " " in line), None
+
+
 def push_review_branches(path: Path) -> list[str]:
     """A reviewer's failing tests (review-once D3): push each local `review/pr-<n>` branch in the
     worktree to the same name on origin, never forced, and say what happened, one line each. Any
     other branch under `review/` is named and left alone. The agent commits; only this pushes."""
-    refs = git("for-each-ref", "--format=%(refname:short)", "refs/heads/review/", cwd=path)
-    if refs.returncode != 0:
-        return [f"- review branches could not be listed: {said(refs)}"]
+    tips, err = review_refs(path)
+    if err is not None:
+        return [f"- review branches could not be listed: {err}"]
     lines = []
-    for name in refs.stdout.split():
+    for name in tips:
         if not REVIEW_BRANCH.fullmatch(name):
             lines.append(f"- review branch {name}: not pushed (only review/pr-<n> is)")
             continue
