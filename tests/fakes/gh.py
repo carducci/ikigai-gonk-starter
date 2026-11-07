@@ -7,10 +7,12 @@
     gh.py --state <file.json> pr list -R <slug> --head <branch> --state all --json …
     gh.py --state <file.json> pr checks <n> -R <slug> --json …
     gh.py --state <file.json> run list -R <slug> --commit <sha> --json …
+    gh.py --state <file.json> pr ready <n> -R <slug> --undo
 
 The state file holds the pull requests, how `pr checks` answers (`"checks": "refused"` is a
 fine-grained token, which GitHub offers no Checks permission for; `"ok"` answers), the runs
-per head sha, someone else's merge (`"merge"`), and every call made. Anything else (`pr merge`
+per head sha, someone else's merge (`"merge"`), whether `pr ready --undo` fails
+(`"ready": "refused"`), and every call made. Anything else (`pr merge`
 above all) is recorded under `forbidden` and fails, so a test can assert the worker never merged.
 """
 
@@ -93,6 +95,12 @@ def main() -> int:
             )
         else:
             out = json.dumps([{"name": "gates", "bucket": "pass"}])
+    elif argv[:2] == ["pr", "ready"] and "--undo" in argv:
+        found = [pr for pr in state["prs"] if str(pr["number"]) == argv[2]]
+        if state.get("ready") == "refused" or not found:
+            code, err = 1, "GraphQL: Resource not accessible by personal access token\n"
+        else:
+            found[0]["isDraft"] = True
     elif argv[:2] == ["run", "list"]:
         sha = flag(argv, "--commit", "")
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
