@@ -76,7 +76,7 @@ def check(repo: Path, review: str, base: str, head: str) -> int:
     files = [f for f in reviewer_files(repo, review, base, risk.reviewer_email) if risk.is_test(f)]
     bad = 0
     for f in files:
-        theirs = blob(repo, review, f)
+        theirs = blob(repo, last_by(repo, review, base, risk.reviewer_email, f), f)
         if theirs is None:
             continue  # the reviewer's last commit removed it: nothing of theirs to keep
         if blob(repo, head, f) != theirs:
