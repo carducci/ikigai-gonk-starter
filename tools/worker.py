@@ -998,13 +998,35 @@ def said(done: subprocess.CompletedProcess) -> str:
     return (done.stderr or done.stdout).strip()[-200:]
 
 
+class UnlistedTips(dict):
+    """The tips of a listing that failed: empty, but not the same as no branches at all."""
+
+    def __init__(self, why: str):
+        super().__init__()
+        self.why = why
+
+
 def review_refs(path: Path) -> tuple[dict[str, str], str | None]:
     """Each local branch under `review/` with its tip, or why they could not be listed."""
     fmt = "--format=%(refname:short) %(objectname)"
     refs = git("for-each-ref", fmt, "refs/heads/review/", cwd=path)
     if refs.returncode != 0:
-        return {}, said(refs)
+        return UnlistedTips(said(refs)), said(refs)
     return dict(line.split(" ", 1) for line in refs.stdout.splitlines() if " " in line), None
+
+
+def branches_of_other_worktrees(path: Path) -> set[str]:
+    """Branches checked out in a worktree of this clone other than `path`: another item's."""
+    listed = git("worktree", "list", "--porcelain", cwd=path)
+    if listed.returncode != 0:
+        return set()
+    mine, here, theirs = path.resolve(), None, set()
+    for line in listed.stdout.splitlines():
+        if line.startswith("worktree "):
+            here = Path(line[len("worktree ") :]).resolve()
+        elif line.startswith("branch ") and here != mine:
+            theirs.add(line[len("branch ") :].removeprefix("refs/heads/"))
+    return theirs
 
 
 def push_review_branches(path: Path, before: dict[str, str] | None = None) -> list[str]:
@@ -1012,13 +1034,18 @@ def push_review_branches(path: Path, before: dict[str, str] | None = None) -> li
     worktree to the same name on origin, never forced, and say what happened, one line each. Any
     other branch under `review/` is named and left alone. The agent commits; only this pushes.
     Given `before` (the tips when the agent started), a branch it didn't make or move is
-    another item's, left in the shared clone, and is neither pushed nor named."""
+    another item's, left in the shared clone, and is neither pushed nor named. So is one checked
+    out in another worktree: that item is running now. If the listing at the start failed, what
+    the agent made cannot be told from what was there, so nothing is pushed."""
+    if isinstance(before, UnlistedTips):
+        return [f"- review branches not pushed: the listing at the start failed: {before.why}"]
     tips, err = review_refs(path)
     if err is not None:
         return [f"- review branches could not be listed: {err}"]
     lines = []
+    others = branches_of_other_worktrees(path)
     for name, tip in tips.items():
-        if before is not None and before.get(name) == tip:
+        if name in others or (before is not None and before.get(name) == tip):
             continue
         if not REVIEW_BRANCH.fullmatch(name):
             lines.append(f"- review branch {name}: not pushed (only review/pr-<n> is)")
