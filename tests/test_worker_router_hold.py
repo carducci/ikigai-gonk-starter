@@ -28,7 +28,6 @@ class RouterHold(unittest.TestCase):
         self.rig.configure()
         return self.rig.worker(self.ledger).candidates()
 
-    @unittest.expectedFailure
     def test_a_router_hold_does_not_fence_the_repository(self):
         held = self.ledger.file("In flight, waiting for its review", ["repo:lib"])
         self.ledger.force_claim(held, "dax-router")

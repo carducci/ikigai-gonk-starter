@@ -620,6 +620,11 @@ def by_router(comment: dict, routers: list[str]) -> bool:
     return any(gonk.same_principal(comment.get("author"), r) for r in routers)
 
 
+# A router's hold on a task in flight (ikigraph flow-on-kata-flight D10): no agent works it, so it
+# never counts toward max_per_repo. Its own item stays claimed, and is never taken.
+ROUTER_HOLDS = frozenset({"dax-router"})
+
+
 def dispatch_problem(item: dict, routers: list[str], labels: list[str]) -> str | None:
     """Why this item was not dispatched to this worker by a router, or None when it was.
 
@@ -1644,7 +1649,7 @@ class Worker:
             if ("review" in (other.get("labels") or [])) != mine:
                 continue
             holder = active_claim(other, now)
-            if holder:
+            if holder and holder not in ROUTER_HOLDS:
                 held.append(f"{other.get('display')} is claimed by `{holder}`")
         return ", ".join(held) if len(held) >= self.wc.max_per_repo else None
 
