@@ -420,6 +420,10 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
     idle = t.get("idle_holders", [])
     if not isinstance(idle, list) or not all(isinstance(h, str) and h for h in idle):
         raise gonk.ConfigError(f"{where}: idle_holders is a list of claim holders, fencing nothing")
+    for h in idle:
+        problem = gonk.holder_problem(h)
+        if problem:
+            raise gonk.ConfigError(f"{where}: idle_holders: {problem}")
 
     loop = loop_name(path)
     state_dir = cfg.repo / ".gonk" / "state" / "worker"

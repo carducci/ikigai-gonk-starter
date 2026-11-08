@@ -169,6 +169,15 @@ class MaxPerRepoConfiguration(unittest.TestCase):
         with self.assertRaises(gonk.ConfigError):
             self.load('idle_holders = "dax-router"')
 
+    def test_an_idle_holder_that_is_not_a_holder_name_is_refused(self):
+        # No claim carries such a name, so it never matches: the hold it was meant for still
+        # fences the repository and the loop deadlocks as before, with nothing said.
+        for bad in ('"dax-router "', '" dax-router"', '"dax router"', '"any"'):
+            with self.subTest(bad=bad):
+                with self.assertRaises(gonk.ConfigError) as e:
+                    self.load(f"idle_holders = [{bad}]")
+                self.assertIn("idle_holders", str(e.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
