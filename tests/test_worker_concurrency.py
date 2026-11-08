@@ -160,6 +160,8 @@ class MaxPerRepoConfiguration(unittest.TestCase):
 
     def test_idle_holders_is_a_list_of_names(self):
         self.assertEqual(self.load('idle_holders = ["dax-router"]').idle_holders, ("dax-router",))
+        with self.assertRaises(gonk.ConfigError):
+            self.load('idle_holders = "dax-router"')
 
 
 if __name__ == "__main__":
