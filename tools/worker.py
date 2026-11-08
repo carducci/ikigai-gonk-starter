@@ -1650,7 +1650,7 @@ class Worker:
             if ("review" in (other.get("labels") or [])) != mine:
                 continue
             holder = active_claim(other, now)
-            if holder:
+            if holder and holder not in self.wc.idle_holders:
                 held.append(f"{other.get('display')} is claimed by `{holder}`")
         return ", ".join(held) if len(held) >= self.wc.max_per_repo else None
 

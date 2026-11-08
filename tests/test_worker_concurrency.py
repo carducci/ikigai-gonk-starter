@@ -48,6 +48,12 @@ class MaxPerRepo(unittest.TestCase):
             skip,
         )
 
+    def test_an_idle_holders_claim_fences_nothing(self):  # a router's hold (carducci#1451)
+        self.ledger.force_claim(self.ledger.file("Held", ["repo:lib"]), "dax-router")
+        lib = self.ledger.file("Also lib", ["worker:w1", "repo:lib"])
+        take = self.candidates(idle_holders='["dax-router"]')[0]
+        self.assertEqual([i["number"] for i, _ in take], [lib])
+
     def test_up_to_max_per_repo_claims_share_a_repository(self):
         first = self.ledger.file("Someone is on lib", ["repo:lib"])
         self.ledger.force_claim(first, "chris")
