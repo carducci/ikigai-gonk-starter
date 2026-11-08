@@ -23,7 +23,8 @@ What it does with one item, in order:
    title and body it still has), is not awaiting its dispatcher (`awaiting_dispatcher`), was
    not handed back by this worker before, and whose repository has fewer ACTIVE claims than
    `max_per_repo` (default 1) among items of its own kind (a review counts only reviews,
-   any other item only non-reviews), and fewer than that many items running on this
+   any other item only non-reviews; a claim by one of `idle_holders`, such as a router's hold
+   between rounds, counts for nothing), and fewer than that many items running on this
    machine. The dispatch is checked again on the item as read after the claim, and the brief
    is built from that read.
 2. Claim it with a lease, then renew the lease while it works (the heartbeat). A renewal that
