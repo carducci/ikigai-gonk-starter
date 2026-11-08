@@ -89,10 +89,67 @@ class PushReviewBranches(unittest.TestCase):
         self.assertIn(": NOT pushed: ", lines[0])
         self.assertEqual(before, self.on_origin("refs/heads/review/pr-7"))
 
+    def test_a_branch_another_item_left_is_neither_pushed_nor_named(self):
+        self.commit_test("review/pr-71")  # mago#618's review, left in the shared clone
+        before, _ = worker.review_refs(self.work)
+        self.assertEqual([], worker.push_review_branches(self.work, before))
+        self.assertFalse(self.on_origin("refs/heads/review/pr-71"))
+
+    def test_a_branch_the_agent_made_is_pushed(self):
+        before, _ = worker.review_refs(self.work)
+        self.commit_test("review/pr-59")
+        lines = worker.push_review_branches(self.work, before)
+        self.assertRegex(lines[0], r"^- review branch review/pr-59 at [0-9a-f]{12}: pushed$")
+
+    def test_a_branch_the_agent_moved_is_pushed(self):
+        self.commit_test("review/pr-7")
+        worker.push_review_branches(self.work)
+        before, _ = worker.review_refs(self.work)
+        git(self.work, "switch", "-q", "review/pr-7")
+        (self.work / "test_y.py").write_text("assert False\n")
+        git(self.work, "add", "-A")
+        git(self.work, "commit", "-q", "-m", "round 2: another failing test")
+        git(self.work, "switch", "-q", "--detach", "main")
+        lines = worker.push_review_branches(self.work, before)
+        self.assertRegex(lines[0], r": pushed$")
+        tip = git(self.work, "rev-parse", "review/pr-7")
+        self.assertEqual(tip, self.on_origin("refs/heads/review/pr-7"))
+
+    def test_a_branch_another_running_item_makes_is_neither_pushed_nor_named(self):
+        # max_per_repo > 1: two review items run at once in worktrees of one clone, whose
+        # branches are shared. Item 618 (PR 71) makes review/pr-71 while item 624 (PR 59) runs.
+        other = self.work.parent / "item-618"
+        git(self.work, "worktree", "add", "-q", "--detach", str(other), "main")
+        before, _ = worker.review_refs(self.work)  # item 624 starts
+        git(other, "switch", "-q", "-c", "review/pr-71")
+        (other / "test_z.py").write_text("assert False\n")
+        git(other, "add", "-A")
+        git(other, "commit", "-q", "-m", "PR 71's review")
+        lines = worker.push_review_branches(self.work, before)  # item 624 hands back
+        self.assertEqual([], lines)
+
+    def test_a_listing_that_failed_at_the_start_does_not_push_every_branch(self):
+        self.commit_test("review/pr-71")  # mago#618's review, left in the shared clone
+        real = worker.git
+        failed = []
+
+        def flaky(*argv, cwd=None):
+            if argv[0] == "for-each-ref" and not failed:
+                failed.append(argv)
+                return subprocess.CompletedProcess(argv, 128, "", "fatal: bad object\n")
+            return real(*argv, cwd=cwd)
+
+        self.addCleanup(setattr, worker, "git", real)
+        worker.git = flaky
+        before, _ = worker.review_refs(self.work)  # the start's listing fails
+        worker.git = real
+        worker.push_review_branches(self.work, before)
+        self.assertFalse(self.on_origin("refs/heads/review/pr-71"))
+
     def test_a_reviewer_loop_pushes_and_a_coder_loop_does_not(self):
         src = (ROOT / "tools" / "worker.py").read_text()
-        wired = 'review_lines = push_review_branches(ws.path) if "review" in self.wc.labels else []'
-        self.assertIn(wired, src)
+        self.assertIn('review_before = review_refs(ws.path)[0] if "review" in self.wc.labels', src)
+        self.assertIn("else push_review_branches(ws.path, review_before)", src)
 
 
 if __name__ == "__main__":
