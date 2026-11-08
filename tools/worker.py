@@ -216,6 +216,7 @@ class WorkerConfig:
     loop: str | None = None  # from `worker-<loop>.toml`; None for worker.toml, the one loop
     holder: str | None = None  # overrides .gonk/local.toml's holder for this loop's claims
     max_per_repo: int = 1  # items of one repository at once, on the ledger and on this machine
+    idle_holders: tuple = ()  # claim holders that fence no repository (a router's hold)
 
     def __post_init__(self) -> None:
         self.loop_dir = self.loop_dir or self.state_dir
@@ -415,6 +416,8 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
             "repository this checkout's loops may work at once"
         )
 
+    idle = t.get("idle_holders", [])
+
     loop = loop_name(path)
     state_dir = cfg.repo / ".gonk" / "state" / "worker"
     loop_dir = state_dir / loop if loop else state_dir
@@ -446,6 +449,7 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         loop=loop,
         holder=holder,
         max_per_repo=max_per_repo,
+        idle_holders=tuple(idle),
         usage=load_usage(t.get("usage", {}), where, command),
     )
 

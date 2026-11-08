@@ -158,6 +158,9 @@ class MaxPerRepoConfiguration(unittest.TestCase):
                 self.load(f"max_per_repo = {bad}")
             self.assertIn("max_per_repo", str(e.exception))
 
+    def test_idle_holders_is_a_list_of_names(self):
+        self.assertEqual(self.load('idle_holders = ["dax-router"]').idle_holders, ("dax-router",))
+
 
 if __name__ == "__main__":
     unittest.main()
