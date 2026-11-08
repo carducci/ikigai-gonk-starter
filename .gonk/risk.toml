@@ -31,6 +31,11 @@ class = "a"
 why = "the review-tests check: CI runs the PR's own copy"
 
 [[path]]
+glob = "tools/risk.py"
+class = "a"
+why = "decides how hard everything else is reviewed"
+
+[[path]]
 glob = "tools/worker*.py"
 class = "b"
 why = "the loop engine: dispatch trust, claims and hand-backs"
