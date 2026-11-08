@@ -26,6 +26,11 @@ class = "a"
 why = "the loops' units and configuration template"
 
 [[path]]
+glob = "tools/review_tests.py"
+class = "a"
+why = "the review-tests check: CI runs the PR's own copy"
+
+[[path]]
 glob = "tools/worker*.py"
 class = "b"
 why = "the loop engine: dispatch trust, claims and hand-backs"
