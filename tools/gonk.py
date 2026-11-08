@@ -931,6 +931,7 @@ class Ikigai:
                 input=stdin if stdin is not None else "",
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=TIMEOUT_S,
             )
         except FileNotFoundError:

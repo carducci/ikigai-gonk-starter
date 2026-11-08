@@ -16,7 +16,6 @@ from support import gonk
 
 
 class Utf8Streams(unittest.TestCase):
-    @unittest.expectedFailure
     def test_ikigai_is_run_with_utf8_streams_whatever_the_locale(self):
         done = subprocess.CompletedProcess([], 0, stdout="→ — ok", stderr="")
         with mock.patch.object(gonk.subprocess, "run", return_value=done) as run:
