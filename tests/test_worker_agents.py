@@ -60,6 +60,11 @@ class ALoopsConfiguration(unittest.TestCase):
         loop = worker.Worker(cfg, self.load(path), FakeLedger())
         self.assertEqual(loop.cfg.target.cert_dir, "/certs/codex")
 
+    def test_a_cert_dir_on_a_socket_is_refused(self):
+        wc = self.load(self.rig.configure("worker-codex.toml", labels=CODEX, cert_dir='"/c/x"'))
+        with self.assertRaises(gonk.ConfigError):
+            worker.Worker(gonk.load(self.rig.checkout), wc, FakeLedger())
+
     def test_worker_toml_is_the_one_loop_as_before(self):
         wc = self.load(self.rig.configure())
         self.assertIsNone(wc.loop)
