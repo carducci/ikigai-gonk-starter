@@ -2037,7 +2037,8 @@ class Worker:
 
     def findings_lines(self, ws: Workspace) -> list[str]:
         """The worktree's `findings.jsonl`, whole: beside the report, in `.gonk/state/`, so it
-        stays out of commits too. Its non-blank lines; none when the agent wrote no such file."""
+        stays out of commits too, or at the worktree root, where the review templates put it
+        (carducci#1423). Its non-blank lines; none when the agent wrote no such file."""
         for path in (ws.report.parent / "findings.jsonl", ws.path / "findings.jsonl"):
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
