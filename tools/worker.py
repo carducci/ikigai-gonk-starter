@@ -1023,9 +1023,9 @@ def branches_of_other_worktrees(path: Path) -> set[str]:
     mine, here, theirs = path.resolve(), None, set()
     for line in listed.stdout.splitlines():
         if line.startswith("worktree "):
-            here = Path(line[len("worktree "):]).resolve()
+            here = Path(line[len("worktree ") :]).resolve()
         elif line.startswith("branch ") and here != mine:
-            theirs.add(line[len("branch "):].removeprefix("refs/heads/"))
+            theirs.add(line[len("branch ") :].removeprefix("refs/heads/"))
     return theirs
 
 
