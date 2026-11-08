@@ -55,6 +55,10 @@ class ALoopsConfiguration(unittest.TestCase):
     def test_its_own_cert_dir(self):  # carducci#563
         path = self.rig.configure("worker-codex.toml", labels=CODEX, cert_dir='"/certs/codex"')
         self.assertEqual(self.load(path).cert_dir, "/certs/codex")
+        cfg = gonk.load(self.rig.checkout)  # over QUIC, it replaces the checkout's bundle
+        cfg.target = gonk.Target(quic="quic://127.0.0.1:1062", cert_dir="/certs/shared")
+        loop = worker.Worker(cfg, self.load(path), FakeLedger())
+        self.assertEqual(loop.cfg.target.cert_dir, "/certs/codex")
 
     def test_worker_toml_is_the_one_loop_as_before(self):
         wc = self.load(self.rig.configure())

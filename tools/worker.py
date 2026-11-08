@@ -1561,6 +1561,9 @@ class Worker:
             # it here is the one place. The machine's identity is unchanged: a holder is a
             # label the ledger records beside the principal, which stays the certificate's.
             cfg = dataclasses.replace(cfg, holder=wc.holder)
+        if wc.cert_dir:  # this loop's own identity, not the checkout's (carducci#563)
+            target = dataclasses.replace(cfg.target, cert_dir=wc.cert_dir)
+            cfg = dataclasses.replace(cfg, target=target)
         gonk.need(cfg, "ledger", "target", "holder")
         self.cfg, self.wc = cfg, wc
         self.ledger = Ledger(cfg, ikigai)
