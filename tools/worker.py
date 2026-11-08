@@ -411,6 +411,9 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         if problem:
             raise gonk.ConfigError(f"{where}: holder: {problem}")
 
+    cert_dir = t.get("cert_dir")
+    if cert_dir is not None and (not isinstance(cert_dir, str) or not cert_dir):
+        raise gonk.ConfigError(f"{where}: cert_dir: not a path")
     max_per_repo = t.get("max_per_repo", 1)
     if isinstance(max_per_repo, bool) or not isinstance(max_per_repo, int) or max_per_repo < 1:
         raise gonk.ConfigError(
@@ -456,6 +459,7 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         global_stop=state_dir / "stop",
         loop=loop,
         holder=holder,
+        cert_dir=cert_dir,
         max_per_repo=max_per_repo,
         idle_holders=tuple(idle),
         usage=load_usage(t.get("usage", {}), where, command),

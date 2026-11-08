@@ -52,6 +52,10 @@ class ALoopsConfiguration(unittest.TestCase):
         self.assertEqual(wc.stop_file, self.base / "codex" / "stop")
         self.assertEqual(wc.stop_files(), [self.base / "codex" / "stop", self.base / "stop"])
 
+    def test_its_own_cert_dir(self):  # carducci#563
+        path = self.rig.configure("worker-codex.toml", labels=CODEX, cert_dir='"/certs/codex"')
+        self.assertEqual(self.load(path).cert_dir, "/certs/codex")
+
     def test_worker_toml_is_the_one_loop_as_before(self):
         wc = self.load(self.rig.configure())
         self.assertIsNone(wc.loop)
