@@ -2038,13 +2038,13 @@ class Worker:
     def findings_lines(self, ws: Workspace) -> list[str]:
         """The worktree's `findings.jsonl`, whole: beside the report, in `.gonk/state/`, so it
         stays out of commits too. Its non-blank lines; none when the agent wrote no such file."""
-        try:
-            text = (ws.report.parent / "findings.jsonl").read_text(
-                encoding="utf-8", errors="replace"
-            )
-        except OSError:
-            return []
-        return [line for line in text.splitlines() if line.strip()]
+        for path in (ws.report.parent / "findings.jsonl",):
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            return [line for line in text.splitlines() if line.strip()]
+        return []
 
     def hand_back(self, number: int, text: str) -> gonk.Answer:
         """Post the hand-back comment, marked with `handback=true`.
