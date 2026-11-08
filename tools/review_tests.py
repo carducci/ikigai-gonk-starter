@@ -47,6 +47,13 @@ def reviewer_files(repo: Path, review: str, base: str, email: str) -> list[str]:
     return sorted({n for n in names if n})
 
 
+def last_by(repo: Path, review: str, base: str, email: str, path: str) -> str:
+    """The reviewer's own last commit to `path`: a later one by anyone else can't rewrite it."""
+    who = f"--author=<{email}>"
+    p = git(repo, "log", "-1", "--format=%H", who, f"{base}..{review}", "--", path)
+    return p.stdout.decode().strip() or review
+
+
 def check(repo: Path, review: str, base: str, head: str) -> int:
     for ref in (base, head):
         if not resolves(repo, ref):
