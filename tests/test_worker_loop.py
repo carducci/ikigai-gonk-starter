@@ -668,6 +668,12 @@ class TheLoop(unittest.TestCase):
         self.assertEqual(block, rows.rstrip("\n"))  # all 60 lines, past the 40-line cut
         self.assertIn("The agent's report:\nVerdict: discuss\n", comment)
 
+    def test_findings_jsonl_at_the_worktree_root_is_appended_too(self):  # carducci#1423
+        self.rig.agent_flags = ["--report", "REVIEW: clean\n", "--findings-at-root", '{"n": 1}\n']
+        n = self.ledger.file("Root findings", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        self.assertIn('```findings\n{"n": 1}\n```', evidence_comments(self.ledger.items[n])[0])
+
     def test_no_findings_file_means_no_findings_block(self):
         self.rig.agent_flags = ["--report", "Verdict: discuss\n"]
         n = self.ledger.file("No findings", ["worker:w1", "repo:lib"])
