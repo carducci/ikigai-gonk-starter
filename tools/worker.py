@@ -23,7 +23,8 @@ What it does with one item, in order:
    title and body it still has), is not awaiting its dispatcher (`awaiting_dispatcher`), was
    not handed back by this worker before, and whose repository has fewer ACTIVE claims than
    `max_per_repo` (default 1) among items of its own kind (a review counts only reviews,
-   any other item only non-reviews), and fewer than that many items running on this
+   any other item only non-reviews; a claim by one of `idle_holders`, such as a router's hold
+   between rounds, counts for nothing), and fewer than that many items running on this
    machine. The dispatch is checked again on the item as read after the claim, and the brief
    is built from that read.
 2. Claim it with a lease, then renew the lease while it works (the heartbeat). A renewal that
@@ -216,6 +217,7 @@ class WorkerConfig:
     loop: str | None = None  # from `worker-<loop>.toml`; None for worker.toml, the one loop
     holder: str | None = None  # overrides .gonk/local.toml's holder for this loop's claims
     max_per_repo: int = 1  # items of one repository at once, on the ledger and on this machine
+    idle_holders: tuple = ()  # claim holders that fence no repository (a router's hold)
 
     def __post_init__(self) -> None:
         self.loop_dir = self.loop_dir or self.state_dir
@@ -415,6 +417,14 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
             "repository this checkout's loops may work at once"
         )
 
+    idle = t.get("idle_holders", [])
+    if not isinstance(idle, list) or not all(isinstance(h, str) and h for h in idle):
+        raise gonk.ConfigError(f"{where}: idle_holders is a list of claim holders, fencing nothing")
+    for h in idle:
+        problem = gonk.holder_problem(h)
+        if problem:
+            raise gonk.ConfigError(f"{where}: idle_holders: {problem}")
+
     loop = loop_name(path)
     state_dir = cfg.repo / ".gonk" / "state" / "worker"
     loop_dir = state_dir / loop if loop else state_dir
@@ -446,6 +456,7 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         loop=loop,
         holder=holder,
         max_per_repo=max_per_repo,
+        idle_holders=tuple(idle),
         usage=load_usage(t.get("usage", {}), where, command),
     )
 
@@ -1684,7 +1695,7 @@ class Worker:
             if ("review" in (other.get("labels") or [])) != mine:
                 continue
             holder = active_claim(other, now)
-            if holder:
+            if holder and holder not in self.wc.idle_holders:
                 held.append(f"{other.get('display')} is claimed by `{holder}`")
         return ", ".join(held) if len(held) >= self.wc.max_per_repo else None
 
