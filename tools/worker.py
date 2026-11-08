@@ -216,6 +216,7 @@ class WorkerConfig:
     usage: dict = field(default_factory=dict)  # the [usage] table: see tools/worker_usage.py
     loop: str | None = None  # from `worker-<loop>.toml`; None for worker.toml, the one loop
     holder: str | None = None  # overrides .gonk/local.toml's holder for this loop's claims
+    cert_dir: str | None = None  # overrides .gonk/local.toml's QUIC client bundle (carducci#563)
     max_per_repo: int = 1  # items of one repository at once, on the ledger and on this machine
     idle_holders: tuple = ()  # claim holders that fence no repository (a router's hold)
 
