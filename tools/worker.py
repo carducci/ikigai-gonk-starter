@@ -2040,6 +2040,11 @@ class Worker:
         stays out of commits too, or at the worktree root, where the review templates put it
         (carducci#1423). Its non-blank lines; none when the agent wrote no such file."""
         for path in (ws.report.parent / "findings.jsonl", ws.path / "findings.jsonl"):
+            if path.is_symlink():  # a committed link reads files the agent never wrote
+                continue
+            seen = git("status", "--porcelain", "--ignored", "--", path.name, cwd=path.parent)
+            if not seen.stdout:  # tracked and unchanged: the commit's text, not the agent's
+                continue
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
