@@ -1553,6 +1553,19 @@ class Outcome:
     renewals: int = 0
 
 
+def with_cert_dir(cfg: gonk.Config, wc: WorkerConfig) -> gonk.Config:
+    """The checkout's configuration with this loop's own QUIC client bundle (carducci#563).
+
+    Every ikigai client the loop builds is made from the target this returns, so none of them
+    speaks with the checkout's certificate. Applying it twice changes nothing."""
+    if not wc.cert_dir:
+        return cfg
+    if not cfg.target.quic:
+        where = cfg.target.describe()
+        raise gonk.ConfigError(f"cert_dir is a QUIC client bundle; {where} is not QUIC")
+    return dataclasses.replace(cfg, target=dataclasses.replace(cfg.target, cert_dir=wc.cert_dir))
+
+
 class Worker:
     def __init__(self, cfg: gonk.Config, wc: WorkerConfig, ikigai, home: Path | None = None):
         if wc.holder:
@@ -1561,12 +1574,7 @@ class Worker:
             # it here is the one place. The machine's identity is unchanged: a holder is a
             # label the ledger records beside the principal, which stays the certificate's.
             cfg = dataclasses.replace(cfg, holder=wc.holder)
-        if wc.cert_dir and not cfg.target.quic:
-            where = cfg.target.describe()
-            raise gonk.ConfigError(f"cert_dir is a QUIC client bundle; {where} is not QUIC")
-        if wc.cert_dir:  # this loop's own identity, not the checkout's (carducci#563)
-            target = dataclasses.replace(cfg.target, cert_dir=wc.cert_dir)
-            cfg = dataclasses.replace(cfg, target=target)
+        cfg = with_cert_dir(cfg, wc)
         gonk.need(cfg, "ledger", "target", "holder")
         self.cfg, self.wc = cfg, wc
         self.ledger = Ledger(cfg, ikigai)
@@ -2196,6 +2204,7 @@ def build(args, make_ikigai, home: Path | None) -> Worker:
         wc.keep = True
     # The holder may come from the loop's own configuration, so Worker checks it, after that.
     gonk.need(cfg, "ledger", "target")
+    cfg = with_cert_dir(cfg, wc)  # before the client is made, so it carries the loop's bundle
     return Worker(cfg, wc, make_ikigai(cfg.target), home=home)
 
 
