@@ -228,6 +228,7 @@ class TheLoop(unittest.TestCase):
         self.assertTrue(prompt.startswith("You are an unattended worker."))
         for rule in [
             "Reproduce before you fix",
+            "never as `git -C <dir>`",  # carducci#1490
             "NEVER merge",
             f"acme#{n}",
             f"on the branch {branch}",

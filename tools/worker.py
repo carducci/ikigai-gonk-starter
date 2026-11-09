@@ -1350,7 +1350,9 @@ its rules hold beside these.
    request: write the URL of your evidence on the FIRST line of {report_file}, and what you
    found on the lines after. Closing with no change is a good outcome.
 3. Work only in this directory, {workdir}, on the branch {branch}, made for you from
-   origin/{base}. Never read or write any other checkout.
+   origin/{base}. Never read or write any other checkout. Run commands from here as written
+   (`git add`, `scripts/gates.sh`), never as `git -C <dir>`, `bash <script>` or `./<script>`:
+   the permission rules match a command as it is spelled, and refuse other spellings.
 4. Every change through a pull request with green CI: commit, push this branch
    (`git push -u origin {branch}`), open ONE pull request against {base} with {pr_create},
    and see its CI to green, fixing what fails. NEVER merge it, never enable auto-merge, and
