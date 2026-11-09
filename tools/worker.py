@@ -821,8 +821,10 @@ def redispatched_since(item: dict, routers: list[str], at: str | None) -> bool:
 
 
 class Attempts:
-    """The items this worker has handed back, so it never takes one twice. `forget` clears one.
-    A file, not memory, so a restarted worker remembers."""
+    """The items this loop has handed back, so it never takes one twice. `forget` clears one.
+    A file, not memory, so a restarted worker remembers. The loops of one checkout share the
+    memory: `candidates` also skips what a sibling's attempts.json holds for the newest dispatch,
+    and `worker.py forget` clears every loop's."""
 
     def __init__(self, state_dir: Path) -> None:
         self.path = state_dir / "attempts.json"
@@ -853,6 +855,50 @@ class Attempts:
             return False
         self.path.write_text(json.dumps(table, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return True
+
+
+def attempt_files(state_dir: Path) -> list[Path]:
+    """The attempts.json of every loop of a checkout that has one: the unnamed loop's, then each
+    named loop's (`state_dir/<loop>/attempts.json`)."""
+    found = [state_dir / "attempts.json", *sorted(state_dir.glob("*/attempts.json"))]
+    return [p for p in found if p.is_file()]
+
+
+def forget_everywhere(state_dir: Path, ledger: str, number: int) -> list[Path]:
+    """Clear `<ledger>#<number>` from every loop's attempts.json here; the files it was cleared from."""
+    return [p for p in attempt_files(state_dir) if Attempts(p.parent).forget(ledger, number)]
+
+
+def sibling_hand_back(
+    item: dict, routers: list[str], ledger: str, state_dir: Path, own: Path
+) -> str | None:
+    """Why to skip an item another loop of this checkout handed back for its newest router
+    dispatch, else None. Read from the loops' own attempts.json, never from a comment, which
+    anyone who can write on the ledger can write. A record at or before the newest router
+    dispatch is re-armed; with no router dispatch there is nothing to have been handed back for.
+    A file that will not parse is no answer, so the item is skipped, naming the file."""
+    dispatched = any(
+        gonk.parse_dispatch(c.get("text") or "") is not None and by_router(c, routers)
+        for c in item.get("comments") or []
+    )
+    key = f"{ledger}#{item['number']}"
+    for path in attempt_files(state_dir):
+        if path == own:
+            continue
+        try:
+            seen = json.loads(path.read_text(encoding="utf-8")).get(key)
+        except FileNotFoundError:
+            continue  # gone since listed: no record
+        except (OSError, ValueError, AttributeError) as e:
+            return f"{path} cannot be read ({e}), so it may hold a hand-back of it"
+        if not seen or not dispatched or redispatched_since(item, routers, seen.get("at")):
+            continue
+        loop = path.parent.name if path.parent != state_dir else "the unnamed loop"
+        return (
+            f"loop `{loop}` handed it back for its newest dispatch already ({seen.get('at')}); "
+            f"`worker.py forget {item['number']}` allows it again"
+        )
+    return None
 
 
 class RepoLock:
@@ -1608,7 +1654,8 @@ class Worker:
 
     def candidates(self) -> tuple[list[tuple[dict, Repo]], list[tuple[str, str]], str | None]:
         """(takeable items in rank order with their repository, (item, why) for the rest, the
-        error when gonk did not answer). Nothing is claimed."""
+        error when gonk did not answer). Nothing is claimed. The loops of one checkout share the
+        memory of hand-backs: an item a sibling handed back for the newest dispatch is skipped."""
         doc, err = self.ledger.next(self.wc.labels, self.wc.without)
         if doc is None:
             return [], [], err
@@ -1686,6 +1733,11 @@ class Worker:
                 f"this worker handed it back already ({seen['outcome']}, {seen['at']}); "
                 f"`worker.py forget {item['number']}` to allow it again"
             )
+        sibling = sibling_hand_back(
+            item, self.wc.routers, self.cfg.ledger, self.wc.state_dir, self.attempts.path
+        )
+        if sibling:
+            return gonk.sensor("worker-skips-handed-back"), sibling
         if repo not in busy:
             busy[repo] = self.repo_holder(repo, now, exclude=None)
         if busy[repo]:
@@ -2320,10 +2372,13 @@ def cmd_plan(args, make_ikigai, home) -> int:
 
 def cmd_forget(args, make_ikigai, home) -> int:
     worker = build(args, make_ikigai, home)
-    if worker.attempts.forget(worker.cfg.ledger, args.item):
-        print(f"forgot {worker.cfg.ledger}#{args.item}: this worker may take it again")
+    cleared = forget_everywhere(worker.wc.state_dir, worker.cfg.ledger, args.item)
+    if cleared:
+        print(f"forgot {worker.cfg.ledger}#{args.item}: this checkout's loops may take it again")
+        for path in cleared:
+            print(f"  cleared from {path}")
         return 0
-    print(f"{worker.cfg.ledger}#{args.item} was not in {worker.attempts.path}")
+    print(f"{worker.cfg.ledger}#{args.item} was in no attempts.json under {worker.wc.state_dir}")
     return 1
 
 
