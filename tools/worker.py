@@ -1871,6 +1871,7 @@ class Worker:
                 raise StepFailed(f"the agent `{argv[0]}` did not start: {e}") from e
             ended, code = self.watch(proc, started, beat)
         exited = datetime.now(UTC)
+        read_agent_log(ws.log)
         took = spoken(time.monotonic() - started)
         where = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
 

@@ -726,6 +726,13 @@ class TheLoop(unittest.TestCase):
         self.assertNotIn("The agent's report", comment)
         self.assertNotIn("Done: see the PR.", comment)  # stdout is the log's, not the item's
 
+    def test_a_json_result_leaves_the_agents_text_in_its_log(self):  # carducci#1490
+        self.rig.agent_flags = ["--json-result", "--say", "Done: see the PR."]
+        n = self.ledger.file("JSON", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        log = evidence_comments(self.ledger.items[n])[0].rsplit("log ", 1)[1].rstrip(".")
+        self.assertEqual(Path(log).read_text(), "Done: see the PR.\n")
+
     def test_a_report_that_is_not_utf8_still_hands_back_the_pull_request(self):
         # an unreadable report must not cost a green PR its evidence (carducci#251)
         self.rig.agent_flags = ["--report-hex", b"Verdict: discuss\n\xff\xfe\n".hex()]
