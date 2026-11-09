@@ -44,6 +44,7 @@ def main() -> int:
     p.add_argument("--report-file")
     p.add_argument("--report", help="text for the report file, whether or not it opens a PR")
     p.add_argument("--findings", help="text for findings.jsonl, beside the report file")
+    p.add_argument("--findings-at-root", help="text for findings.jsonl at the worktree root")
     p.add_argument("--report-hex", help="bytes for the report file, in hex: not always UTF-8")
     p.add_argument("--confined", action="store_true", help="write nothing outside the worktree")
     p.add_argument("--say", help="its final message, on stdout, as `claude -p` prints one")
@@ -70,6 +71,8 @@ def main() -> int:
         report.write_text(args.report)
     if args.findings is not None and report:
         (report.parent / "findings.jsonl").write_text(args.findings)
+    if args.findings_at_root is not None:
+        Path("findings.jsonl").write_text(args.findings_at_root)
     if args.report_hex is not None and report:
         report.write_bytes(bytes.fromhex(args.report_hex))
     status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)

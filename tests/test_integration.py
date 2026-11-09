@@ -263,7 +263,7 @@ class AgainstARealGonk(unittest.TestCase):
         # Tree one claims on a one-second lease; tree two is refused while it runs.
         code, out = tool(one, "claim", "1", "--lease", "1s")
         self.assertEqual(code, 0, out)
-        self.assertIn("claimed by one until", out)
+        self.assertRegex(out, r"claimed by one (at epoch \d+ )?until")  # gonk names the epoch now
         hook = load_hook()
         edit = {"tool_name": "Edit", "tool_input": {"file_path": str(one / "artifacts" / "x")}}
         self.assertEqual(hook.decide(edit), (0, ""))

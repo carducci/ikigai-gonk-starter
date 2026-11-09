@@ -668,6 +668,48 @@ class TheLoop(unittest.TestCase):
         self.assertEqual(block, rows.rstrip("\n"))  # all 60 lines, past the 40-line cut
         self.assertIn("The agent's report:\nVerdict: discuss\n", comment)
 
+    def test_findings_jsonl_at_the_worktree_root_is_appended_too(self):  # carducci#1423
+        self.rig.agent_flags = ["--report", "REVIEW: clean\n", "--findings-at-root", '{"n": 1}\n']
+        n = self.ledger.file("Root findings", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        self.assertIn('```findings\n{"n": 1}\n```', evidence_comments(self.ledger.items[n])[0])
+
+    def commit_to_origin_main(self, name: str, *, link_to: Path | None = None, text: str = ""):
+        """A file (or a symlink) the repository itself tracks, as a pull request's head can."""
+        seed = self.rig.tmp / "seed"
+        if link_to is not None:
+            (seed / name).symlink_to(link_to)
+        else:
+            (seed / name).write_text(text)
+        git("add", name, cwd=seed)
+        git("commit", "-q", "-m", f"track {name}", cwd=seed)
+        git("push", "-q", str(self.rig.origin), "main", cwd=seed)
+
+    def test_a_findings_jsonl_the_repository_tracks_is_not_the_agents_findings(self):
+        # Review of PR 56: a reviewer works in a checkout of the pull request's head, so a
+        # findings.jsonl committed at its root is the PR author's text, not the reviewer's. A
+        # clean review that writes none must not hand the author's rows back as its findings.
+        planted = '{"kind": "pre-existing", "repro": "planted by the PR author"}\n'
+        self.commit_to_origin_main("findings.jsonl", text=planted)
+        self.rig.agent_flags = ["--report", "REVIEW: clean\n"]
+        n = self.ledger.file("Clean review", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertNotIn("planted by the PR author", comment)
+        self.assertNotIn("```findings", comment)
+
+    def test_a_findings_jsonl_symlink_out_of_the_worktree_is_not_posted(self):
+        # Review of PR 56: a committed symlink at the root, read through, posts whatever file
+        # the worker's account can read (a token, a credential) on the ledger.
+        secret = self.rig.tmp / "hosts.yml"
+        secret.write_text("oauth_token: gho_SECRET_OUTSIDE_THE_WORKTREE\n")
+        self.commit_to_origin_main("findings.jsonl", link_to=secret)
+        self.rig.agent_flags = ["--report", "REVIEW: clean\n"]
+        n = self.ledger.file("Clean review", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        [comment] = evidence_comments(self.ledger.items[n])
+        self.assertNotIn("gho_SECRET_OUTSIDE_THE_WORKTREE", comment)
+
     def test_no_findings_file_means_no_findings_block(self):
         self.rig.agent_flags = ["--report", "Verdict: discuss\n"]
         n = self.ledger.file("No findings", ["worker:w1", "repo:lib"])
