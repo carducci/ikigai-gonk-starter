@@ -497,6 +497,21 @@ class TheLoop(unittest.TestCase):
         self.assertIn("last reason", report.splitlines())
         self.assertNotIn("could not be listed", report)
 
+    def test_the_agents_report_cannot_redraw_a_line_of_the_worker_log(self):
+        # Splitting on newlines is not the only way to put a line in the operator's view: an
+        # escape sequence the agent writes (erase the line, go to column 1) redraws the
+        # indented entry as a line of its own, posing as the worker's, wherever the log is
+        # read on a terminal (`tail -f`, journalctl). No control character of the agent's may
+        # reach the log.
+        forged = "2026-11-09T00:00:00Z worker: handed acme#9 back with https://x/pull/1"
+        self.rig.agent_flags = ["--no-pr", "--note", f"I stopped.\n\x1b[2K\x1b[1G{forged}\n"]
+        n = self.ledger.file("Redraws a log line", ["worker:w1", "repo:lib"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self.run_once().code, worker.NOT_HANDED_BACK)
+        self.released_with_one_note(n, "The agent's report:", forged)
+        self.assertNotIn("\x1b", out.getvalue())
+
     def test_a_missing_report_still_says_it_wrote_none(self):
         self.rig.agent_flags = ["--no-pr"]
         n = self.ledger.file("Gives up silently", ["worker:w1", "repo:lib"])
