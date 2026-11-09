@@ -461,6 +461,24 @@ class TheLoop(unittest.TestCase):
         self.assertEqual(deletes, [(f"delete urn:gk:iki:ledger:acme:claim item={n} from=w1", "")])
         return texts[0]
 
+    def test_a_report_without_evidence_reaches_the_hand_back(self):
+        lines = [f"reason line {i}" for i in range(50)]
+        self.rig.agent_flags = ["--no-pr", "--note", "\n\n".join(lines)]
+        n = self.ledger.file("Gives up with a reason", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.NOT_HANDED_BACK)
+        text = self.released_with_one_note(n, "without evidence", "The agent's report:")
+        self.assertNotIn("wrote no evidence to its report file", text)
+        self.assertIn("reason line 0", text)
+        self.assertIn("reason line 39", text)
+        self.assertNotIn("reason line 40", text)
+
+    def test_a_missing_report_still_says_it_wrote_none(self):
+        self.rig.agent_flags = ["--no-pr"]
+        n = self.ledger.file("Gives up silently", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.NOT_HANDED_BACK)
+        text = self.released_with_one_note(n, "wrote no evidence to its report file")
+        self.assertNotIn("The agent's report:", text)
+
     def test_a_stopped_worker_hands_the_item_back_with_a_note(self):
         self.rig.agent_flags = ["--sleep", "60"]
         n = self.ledger.file("Interrupted", ["worker:w1", "repo:lib"])
