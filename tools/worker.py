@@ -2164,6 +2164,16 @@ def agent_result(text: str) -> tuple[str, list[str]]:
     return (head + "\n" if head else "") + final, [refused_call(d) for d in denials]
 
 
+def read_agent_log(log: Path) -> list[str]:
+    """Leave the agent's final text in its log in place of a JSON result line, and return
+    the tool calls its permission rules refused (carducci#1490)."""
+    logged = log.read_text(encoding="utf-8", errors="replace")
+    text, refused = agent_result(logged)
+    if text != logged:
+        log.write_text(text, encoding="utf-8")
+    return refused
+
+
 def refused_call(denial: dict) -> str:
     """One refused tool call, on one line: `Bash: git -C /w add x`."""
     args = denial.get("tool_input") or {}
