@@ -2148,6 +2148,37 @@ class Worker:
         return 0
 
 
+def agent_result(text: str) -> tuple[str, list[str]]:
+    """The log of a `claude -p --output-format json` run, read back (carducci#1490): its final
+    text in place of the JSON line, and each tool call the permission rules refused. Any other
+    log comes back unchanged, with no refusals."""
+    head, _, last = text.rstrip("\n").rpartition("\n")
+    try:
+        result = json.loads(last)
+    except ValueError:
+        return text, []
+    if not isinstance(result, dict) or result.get("type") != "result":
+        return text, []
+    denials = [d for d in result.get("permission_denials") or [] if isinstance(d, dict)]
+    final = f"{result.get('result') or ''}\n"
+    return (head + "\n" if head else "") + final, [refused_call(d) for d in denials]
+
+
+def refused_call(denial: dict) -> str:
+    """One refused tool call, on one line: `Bash: git -C /w add x`."""
+    args = denial.get("tool_input") or {}
+    what = args.get("command") or args.get("file_path") or json.dumps(args, sort_keys=True)
+    return f"{denial.get('tool_name', '?')}: {' '.join(str(what).split())[:200]}"
+
+
+def refused_lines(refused: list[str]) -> list[str]:
+    """A hand-back's account of what the permission rules refused, so a blocked agent's item
+    says what blocked it instead of leaving it to be dug out of a transcript (carducci#1490)."""
+    if not refused:
+        return []
+    return ["", "The agent's permission rules refused:", *(f"- `{r}`" for r in refused)]
+
+
 def merge_line(pr: PullRequest, exited: datetime) -> str:
     """Who merged a pull request the run opened, as far as the worker can tell. The login cannot
     tell the agent from its dispatcher when both use one GitHub identity, so the time decides: a

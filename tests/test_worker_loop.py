@@ -1175,6 +1175,22 @@ class ContinuingADraftPullRequest(unittest.TestCase):
                 self.assertIn(says, note)
 
 
+class AgentResult(unittest.TestCase):
+    """`claude -p --output-format json` read back from the log (carducci#1490)."""
+
+    def test_a_plain_log_comes_back_unchanged(self):
+        self.assertEqual(worker.agent_result("Done: see the PR.\n"), ("Done: see the PR.\n", []))
+
+    def test_a_json_result_becomes_its_text_and_its_refusals(self):
+        denial = {"tool_name": "Bash", "tool_input": {"command": "git -C /w add x", "x": 1}}
+        line = json.dumps({"type": "result", "result": "Blocked.", "permission_denials": [denial]})
+        text, refused = worker.agent_result(f"a warning\n{line}\n")
+        self.assertEqual(text, "a warning\nBlocked.\n")
+        self.assertEqual(refused, ["Bash: git -C /w add x"])
+        self.assertIn("- `Bash: git -C /w add x`", worker.refused_lines(refused))
+        self.assertEqual(worker.refused_lines([]), [])
+
+
 class ShortSha(unittest.TestCase):
     def test_a_short_sha_is_never_asked_about(self):
         """`gh run list --commit` with a short sha answers [] silently; asking would report
