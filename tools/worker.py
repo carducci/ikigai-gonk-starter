@@ -2208,7 +2208,7 @@ def build(args, make_ikigai, home: Path | None) -> Worker:
         wc.keep = True
     # The holder may come from the loop's own configuration, so Worker checks it, after that.
     gonk.need(cfg, "ledger", "target")
-    return Worker(cfg, wc, make_ikigai(cfg.target), home=home)
+    return Worker(cfg, wc, make_ikigai(loop_target(cfg, wc)), home=home)  # carducci#563
 
 
 def cmd_run(args, make_ikigai, home) -> int:
