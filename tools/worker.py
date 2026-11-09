@@ -1355,7 +1355,9 @@ its rules hold beside these.
    request: write the URL of your evidence on the FIRST line of {report_file}, and what you
    found on the lines after. Closing with no change is a good outcome.
 3. Work only in this directory, {workdir}, on the branch {branch}, made for you from
-   origin/{base}. Never read or write any other checkout.
+   origin/{base}. Never read or write any other checkout. Run commands from here as written
+   (`git add`, `scripts/gates.sh`), never as `git -C <dir>`, `bash <script>` or `./<script>`:
+   the permission rules match a command as it is spelled, and refuse other spellings.
 4. Every change through a pull request with green CI: commit, push this branch
    (`git push -u origin {branch}`), open ONE pull request against {base} with {pr_create},
    and see its CI to green, fixing what fails. NEVER merge it, never enable auto-merge, and
@@ -1889,6 +1891,7 @@ class Worker:
                 raise StepFailed(f"the agent `{argv[0]}` did not start: {e}") from e
             ended, code = self.watch(proc, started, beat)
         exited = datetime.now(UTC)
+        refused = read_agent_log(ws.log)
         took = spoken(time.monotonic() - started)
         where = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
 
@@ -1961,7 +1964,10 @@ class Worker:
                 f"opened no pull request on {ws.branch} and wrote no evidence to its report "
                 f"file. {where}."
             )
-            if pr_err:
+            note += "\n".join(refused_lines(refused))
+            if pr_err and refused:
+                note += f"\n\nThe pull requests could not be listed: {pr_err}"
+            elif pr_err:
                 note += f" (The pull requests could not be listed: {pr_err})"
             self.release_if_ours(number, note)
             return Outcome(NOT_HANDED_BACK, note, prs=prs)
@@ -1984,6 +1990,7 @@ class Worker:
         else:
             body += ["", "No pull request: the agent reported the evidence above instead."]
             body += self.report_lines(ws)[1:41]
+        body += refused_lines(refused)
         if findings := self.findings_lines(ws):  # whole, outside the cut above
             body += ["", "```findings", *findings, "```"]
         body += [
@@ -2164,6 +2171,60 @@ class Worker:
                 self.shutdown.wait(self.wc.poll)
         log("stopped by a signal")
         return 0
+
+
+def agent_result(text: str) -> tuple[str, list[str]]:
+    """The log of a `claude -p --output-format json` run, read back (carducci#1490): its final
+    text in place of the JSON line, and each tool call the permission rules refused. Any other
+    log comes back unchanged, with no refusals."""
+    lines = text.rstrip("\n").split("\n")
+    for i in range(len(lines) - 1, -1, -1):
+        # stderr is merged into the log, so the result line may be followed by other lines
+        if not lines[i].startswith("{"):
+            continue
+        try:
+            result = json.loads(lines[i])
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(result, dict) or result.get("type") != "result":
+            continue
+        denied = result.get("permission_denials")
+        denials = [d for d in denied if isinstance(d, dict)] if isinstance(denied, list) else []
+        final = f"{result.get('result') or ''}\n"
+        before = "\n".join(lines[:i])
+        after = "\n".join(lines[i + 1 :])
+        out = (before + "\n" if before else "") + final + (after + "\n" if after else "")
+        return out, [refused_call(d) for d in denials]
+    return text, []
+
+
+def read_agent_log(log: Path) -> list[str]:
+    """Leave the agent's final text in its log in place of a JSON result line, and return
+    the tool calls its permission rules refused (carducci#1490)."""
+    logged = log.read_text(encoding="utf-8", errors="replace")
+    text, refused = agent_result(logged)
+    if text != logged:
+        log.write_text(text, encoding="utf-8")
+    return refused
+
+
+def refused_call(denial: dict) -> str:
+    """One refused tool call, on one line: `Bash: git -C /w add x`."""
+    args = denial.get("tool_input") or {}
+    if isinstance(args, dict):
+        what = args.get("command") or args.get("file_path") or json.dumps(args, sort_keys=True)
+    else:
+        what = args
+    name = " ".join(str(denial.get("tool_name", "?")).split())[:100]
+    return f"{name}: {' '.join(str(what).split())[:200]}"
+
+
+def refused_lines(refused: list[str]) -> list[str]:
+    """A hand-back's account of what the permission rules refused, so a blocked agent's item
+    says what blocked it instead of leaving it to be dug out of a transcript (carducci#1490)."""
+    if not refused:
+        return []
+    return ["", "The agent's permission rules refused:", *(f"- `{r}`" for r in refused)]
 
 
 def merge_line(pr: PullRequest, exited: datetime) -> str:

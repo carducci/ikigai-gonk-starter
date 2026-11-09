@@ -16,6 +16,7 @@ file outside it is not written (carducci#335).
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import subprocess
 import sys
@@ -49,6 +50,8 @@ def main() -> int:
     p.add_argument("--confined", action="store_true", help="write nothing outside the worktree")
     p.add_argument("--say", help="its final message, on stdout, as `claude -p` prints one")
     p.add_argument("--chatter", help="progress on stderr, as `codex exec` writes it")
+    p.add_argument("--json-result", action="store_true", help="as --output-format json")
+    p.add_argument("--refused", action="append", default=[], help="a refused command")
     p.add_argument("--exit", type=int, default=0)
     p.add_argument("prompt")
     args = p.parse_args()
@@ -89,7 +92,10 @@ def main() -> int:
             check=True,
             capture_output=True,
         )
-    if args.say:
+    if args.json_result:  # `claude -p --output-format json`: one result line
+        denials = [{"tool_name": "Bash", "tool_input": {"command": c}} for c in args.refused]
+        print(json.dumps({"type": "result", "result": args.say, "permission_denials": denials}))
+    elif args.say:
         print(args.say)
     (record / f"finished-{args.item}").write_text(str(time.time()))
     return args.exit
