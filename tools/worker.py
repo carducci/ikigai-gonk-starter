@@ -446,6 +446,8 @@ def work_root(text: str, home: Path, repo: Path | None = None) -> Path:
 
 def log(message: str) -> None:
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # A message may carry text the agent wrote; keep each of its lines inside this one entry.
+    message = message.replace("\r", "").replace("\n", "\n    ")
     print(f"{stamp} worker: {message}", flush=True)
 
 
@@ -1490,10 +1492,10 @@ class Worker:
                 )
                 + f". {where}."
             )
-            if said:
-                note += "\n\nThe agent's report:\n" + "\n".join(said)
             if pr_err:
                 note += f" (The pull requests could not be listed: {pr_err})"
+            if said:
+                note += "\n\nThe agent's report:\n" + "\n".join(said)
             self.release_if_ours(number, note)
             return Outcome(NOT_HANDED_BACK, note, prs=prs)
 
