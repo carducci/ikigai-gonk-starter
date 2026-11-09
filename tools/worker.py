@@ -862,19 +862,32 @@ def attempt_files(state_dir: Path) -> list[Path]:
     return [state_dir / "attempts.json", *sorted(state_dir.glob("*/attempts.json"))]
 
 
-def forget_everywhere(state_dir: Path, ledger: str, number: int) -> list[Path]:
-    """Clear `<ledger>#<number>` from every attempts.json of the checkout; the files it cleared."""
-    return [
-        f
-        for f in attempt_files(state_dir)
-        if f.exists() and Attempts(f.parent).forget(ledger, number)
-    ]
+def forget_everywhere(
+    state_dir: Path, ledger: str, number: int, own: Path | None = None
+) -> tuple[list[Path], list[Path]]:
+    """Clear `<ledger>#<number>` from every attempts.json of the checkout: this loop's own file
+    (`own`) first, then the siblings'. Returns (the files it cleared, the files it could not
+    read). A file that will not parse is left untouched and the sweep goes on."""
+    files = attempt_files(state_dir)
+    if own is not None:
+        files = [own, *(f for f in files if f != own)]
+    cleared: list[Path] = []
+    unreadable: list[Path] = []
+    for f in files:
+        if not f.exists():
+            continue
+        try:
+            if Attempts(f.parent).forget(ledger, number):
+                cleared.append(f)
+        except (gonk.ConfigError, OSError, AttributeError):
+            unreadable.append(f)
+    return cleared, unreadable
 
 
 def sibling_hand_back(
     item: dict, routers: list[str], ledger: str, state_dir: Path, own: Path
-) -> tuple[str, str] | None:
-    """(who, when) of a SIBLING loop's hand-back since the item's newest router dispatch, else None.
+) -> tuple[str, Path | None, str] | None:
+    """(who, unreadable file or None, when) of a SIBLING loop's hand-back since the item's newest router dispatch, else None.
 
     Read from the loops' own attempts files, never from comment text, which anyone who can write
     on the ledger can write. A router's later dispatch re-arms the item; with no router dispatch
@@ -891,10 +904,10 @@ def sibling_hand_back(
         try:
             seen = Attempts(f.parent).read().get(f"{ledger}#{item['number']}")
         except (gonk.ConfigError, OSError, AttributeError) as e:
-            return f"{f} is unreadable ({e}), so a sibling loop may have", "unknown time"
+            return f"{f} is unreadable ({e}), so a sibling loop may have", f, "unknown time"
         if isinstance(seen, dict) and not redispatched_since(item, routers, seen.get("at")):
             loop = f.parent.name if f.parent != state_dir else "the unnamed loop"
-            return f"loop {loop} has", seen.get("at") or "unknown time"
+            return f"loop {loop} has", None, seen.get("at") or "unknown time"
     return None
 
 
@@ -1732,9 +1745,14 @@ class Worker:
         sibling = sibling_hand_back(
             item, self.wc.routers, self.cfg.ledger, self.wc.state_dir, self.attempts.path
         )
+        if sibling and sibling[1] is not None:
+            return gonk.sensor("worker-skips-handed-back"), (
+                f"{sibling[0]} handed it back for its newest dispatch ({sibling[2]}); "
+                f"repair or remove {sibling[1]} by hand"
+            )
         if sibling:
             return gonk.sensor("worker-skips-handed-back"), (
-                f"{sibling[0]} handed it back for its newest dispatch ({sibling[1]}); "
+                f"{sibling[0]} handed it back for its newest dispatch ({sibling[2]}); "
                 f"`worker.py forget {item['number']}` allows it again"
             )
         if repo not in busy:
@@ -2371,12 +2389,19 @@ def cmd_plan(args, make_ikigai, home) -> int:
 
 def cmd_forget(args, make_ikigai, home) -> int:
     worker = build(args, make_ikigai, home)
-    cleared = forget_everywhere(worker.wc.state_dir, worker.cfg.ledger, args.item)
+    cleared, unreadable = forget_everywhere(
+        worker.wc.state_dir, worker.cfg.ledger, args.item, worker.attempts.path
+    )
     if cleared:
         files = ", ".join(str(f) for f in cleared)
         print(f"forgot {worker.cfg.ledger}#{args.item} in {files}: the loops may take it again")
+    for f in unreadable:
+        print(f"{f} is unreadable, left as it is: repair or remove it by hand", file=sys.stderr)
+    if cleared:
         return 0
-    print(f"{worker.cfg.ledger}#{args.item} was in no attempts.json under {worker.wc.state_dir}")
+    if not unreadable:
+        where = worker.wc.state_dir
+        print(f"{worker.cfg.ledger}#{args.item} was in no attempts.json under {where}")
     return 1
 
 
