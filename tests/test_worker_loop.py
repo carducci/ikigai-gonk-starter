@@ -456,7 +456,9 @@ class TheLoop(unittest.TestCase):
     def test_a_dispatch_after_a_siblings_hand_back_rearms_the_item(self):
         self.rig.configure()
         n = self.ledger.file("Tried by the other loop", ["worker:w1", "repo:lib"])
-        self.ledger.add_comment(n, "Evidence: none\n\ngonk worker `w1-2` handed this back: exited 0.")
+        self.ledger.add_comment(
+            n, "Evidence: none\n\ngonk worker `w1-2` handed this back: exited 0."
+        )
         self.ledger.dispatch(n)
         take, _, _ = self.rig.worker(self.ledger).candidates()
         self.assertEqual([i["number"] for i, _ in take], [n])
