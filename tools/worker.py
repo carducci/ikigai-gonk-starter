@@ -592,8 +592,13 @@ def dispatch_problem(item: dict, routers: list[str], labels: list[str]) -> str |
 
 HAND_BACK_HOLDER = re.compile(r"gonk worker `([^`]+)`")
 # A worker's own note that it gave the item back: with evidence, or one of the notes without it.
-HAND_BACK_NOTES = ("handed this back", "back without evidence", "and hands it back:", "stopped the agent on",
-                   "could not post its evidence")
+HAND_BACK_NOTES = (
+    "handed this back",
+    "back without evidence",
+    "and hands it back:",
+    "stopped the agent on",
+    "could not post its evidence",
+)
 
 
 def _at(text: str | None) -> datetime | None:
@@ -605,7 +610,7 @@ def _at(text: str | None) -> datetime | None:
 
 
 def sibling_hand_back(item: dict, routers: list[str], holder: str | None) -> tuple[str, str] | None:
-    """(holder, time) of a hand-back by ANOTHER loop since the item's newest router dispatch, else None.
+    """(holder, time) of a hand-back by ANOTHER loop since the newest router dispatch, else None.
 
     `Attempts` remembers only this loop's own hand-backs, so a second loop on the same dispatch
     (coder-sonnet-2 beside coder-sonnet) took again what its sibling had handed back as soon as the
@@ -619,7 +624,9 @@ def sibling_hand_back(item: dict, routers: list[str], holder: str | None) -> tup
         return None
     for c in item.get("comments") or []:
         text, at = c.get("text") or "", _at(c.get("time"))
-        if at is None or at <= newest or by_router(c, routers) or not any(n in text for n in HAND_BACK_NOTES):
+        if at is None or at <= newest or by_router(c, routers):
+            continue
+        if not any(n in text for n in HAND_BACK_NOTES):
             continue
         m = HAND_BACK_HOLDER.search(text)
         if m and m.group(1) != holder:
@@ -1308,7 +1315,8 @@ class Worker:
         sibling = sibling_hand_back(item, self.wc.routers, self.cfg.holder)
         if sibling:
             return gonk.sensor("worker-skips-handed-back"), (
-                f"gonk worker `{sibling[0]}` handed it back for its newest dispatch already ({sibling[1]}); "
+                f"gonk worker `{sibling[0]}` handed it back for its newest dispatch already "
+                f"({sibling[1]}); "
                 "a router's new dispatch allows it again"
             )
         if repo not in busy:
