@@ -42,6 +42,7 @@ def main() -> int:
     p.add_argument("--no-pr", action="store_true")
     p.add_argument("--evidence")
     p.add_argument("--report-file")
+    p.add_argument("--note")  # write this text, not a URL, to the report file
     p.add_argument("--exit", type=int, default=0)
     p.add_argument("prompt")
     args = p.parse_args()
@@ -66,6 +67,8 @@ def main() -> int:
 
     if args.evidence:
         Path(args.report_file).write_text(f"{args.evidence}\nIt does not reproduce: see the run.\n")
+    if args.note:
+        Path(args.report_file).write_text(args.note)
     if not args.no_pr:
         Path("WORKED.txt").write_text(f"item {args.item}\n")
         git("add", "WORKED.txt")

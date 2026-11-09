@@ -446,6 +446,8 @@ def work_root(text: str, home: Path, repo: Path | None = None) -> Path:
 
 def log(message: str) -> None:
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # A message may carry text the agent wrote; keep each of its lines inside this one entry.
+    message = message.replace("\r", "").replace("\n", "\n    ")
     print(f"{stamp} worker: {message}", flush=True)
 
 
@@ -1475,13 +1477,25 @@ class Worker:
         evidence = prs[0].url if prs else self.reported_evidence(ws)
         if not evidence:
             gonk.fire("worker-no-evidence", "refusal", self.cfg.repo)
+            try:
+                said = ws.report.read_text(encoding="utf-8").splitlines()
+            except FileNotFoundError:
+                said = []
+            said = [line for line in said if line.strip()][:40]
             note = (
                 f"gonk worker `{holder}` handed {display} back without evidence: {agent}, "
-                f"opened no pull request on {ws.branch} and wrote no evidence to its report "
-                f"file. {where}."
+                f"opened no pull request on {ws.branch} and "
+                + (
+                    "wrote no evidence URL to its report file"
+                    if said
+                    else "wrote no evidence to its report file"
+                )
+                + f". {where}."
             )
             if pr_err:
                 note += f" (The pull requests could not be listed: {pr_err})"
+            if said:
+                note += "\n\nThe agent's report:\n" + "\n".join(said)
             self.release_if_ours(number, note)
             return Outcome(NOT_HANDED_BACK, note, prs=prs)
 

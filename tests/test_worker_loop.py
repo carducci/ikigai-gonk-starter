@@ -15,6 +15,7 @@ import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from support import ROOT, gonk, scratch_repo
 from worker_support import DISPATCHER, FakeLedger, Rig, worker
@@ -460,6 +461,48 @@ class TheLoop(unittest.TestCase):
         deletes = [(c, stdin) for c, stdin in self.ledger.calls if c.startswith("delete")]
         self.assertEqual(deletes, [(f"delete urn:gk:iki:ledger:acme:claim item={n} from=w1", "")])
         return texts[0]
+
+    def test_a_report_without_evidence_reaches_the_hand_back(self):
+        lines = [f"reason line {i}" for i in range(50)]
+        self.rig.agent_flags = ["--no-pr", "--note", "\n\n".join(lines)]
+        n = self.ledger.file("Gives up with a reason", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.NOT_HANDED_BACK)
+        text = self.released_with_one_note(n, "without evidence", "The agent's report:")
+        self.assertNotIn("wrote no evidence to its report file", text)
+        self.assertIn("reason line 0", text)
+        self.assertIn("reason line 39", text)
+        self.assertNotIn("reason line 40", text)
+
+    def test_the_agents_report_cannot_forge_lines_in_the_worker_log(self):
+        # The report is the agent's text; the worker's log is the operator's. A line the agent
+        # writes must not land in the log as a line of its own, posing as the worker's.
+        forged = "2026-11-09T00:00:00Z worker: handed acme#9 back with https://x/pull/1"
+        self.rig.agent_flags = ["--no-pr", "--note", f"I stopped.\n{forged}\n"]
+        n = self.ledger.file("Forges a log line", ["worker:w1", "repo:lib"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self.run_once().code, worker.NOT_HANDED_BACK)
+        self.released_with_one_note(n, "The agent's report:", forged)
+        self.assertNotIn(forged, out.getvalue().splitlines())
+
+    def test_a_pr_listing_error_is_not_put_inside_the_agents_report(self):
+        # The worker's own note that the pull requests could not be listed must not read as
+        # the agent's words: the agent's last line stays exactly as the agent wrote it.
+        self.rig.agent_flags = ["--no-pr", "--note", "first reason\nlast reason\n"]
+        n = self.ledger.file("Gives up while gh fails", ["worker:w1", "repo:lib"])
+        with mock.patch.object(worker.GitHub, "pull_requests", return_value=([], "HTTP 502")):
+            self.assertEqual(self.run_once().code, worker.NOT_HANDED_BACK)
+        text = self.released_with_one_note(n, "The agent's report:", "could not be listed")
+        report = text.split("The agent's report:", 1)[1]
+        self.assertIn("last reason", report.splitlines())
+        self.assertNotIn("could not be listed", report)
+
+    def test_a_missing_report_still_says_it_wrote_none(self):
+        self.rig.agent_flags = ["--no-pr"]
+        n = self.ledger.file("Gives up silently", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.NOT_HANDED_BACK)
+        text = self.released_with_one_note(n, "wrote no evidence to its report file")
+        self.assertNotIn("The agent's report:", text)
 
     def test_a_stopped_worker_hands_the_item_back_with_a_note(self):
         self.rig.agent_flags = ["--sleep", "60"]
