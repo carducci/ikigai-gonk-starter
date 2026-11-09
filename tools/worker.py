@@ -590,6 +590,43 @@ def dispatch_problem(item: dict, routers: list[str], labels: list[str]) -> str |
     return None
 
 
+HAND_BACK_HOLDER = re.compile(r"gonk worker `([^`]+)`")
+# A worker's own note that it gave the item back: with evidence, or one of the notes without it.
+HAND_BACK_NOTES = ("handed this back", "back without evidence", "and hands it back:", "stopped the agent on",
+                   "could not post its evidence")
+
+
+def _at(text: str | None) -> datetime | None:
+    """A ledger time as an instant (compared as instants, never as strings), or None."""
+    try:
+        return gonk.parse_instant(text or "")
+    except ValueError:
+        return None
+
+
+def sibling_hand_back(item: dict, routers: list[str], holder: str | None) -> tuple[str, str] | None:
+    """(holder, time) of a hand-back by ANOTHER loop since the item's newest router dispatch, else None.
+
+    `Attempts` remembers only this loop's own hand-backs, so a second loop on the same dispatch
+    (coder-sonnet-2 beside coder-sonnet) took again what its sibling had handed back as soon as the
+    dispatcher answered without dispatching (carducci#1562). The ledger says who handed it back. A
+    claimed name in a comment can only make a loop skip, never take, and a router's new dispatch
+    re-arms the item as before. This loop's own hand-backs stay with `Attempts` and `forget`."""
+    dispatched = [_at(c.get("time")) for c in item.get("comments") or []
+                  if gonk.parse_dispatch(c.get("text") or "") is not None and by_router(c, routers)]
+    newest = max((t for t in dispatched if t), default=None)
+    if newest is None:
+        return None
+    for c in item.get("comments") or []:
+        text, at = c.get("text") or "", _at(c.get("time"))
+        if at is None or at <= newest or by_router(c, routers) or not any(n in text for n in HAND_BACK_NOTES):
+            continue
+        m = HAND_BACK_HOLDER.search(text)
+        if m and m.group(1) != holder:
+            return m.group(1), c.get("time") or ""
+    return None
+
+
 def redispatched_since(item: dict, routers: list[str], at: str | None) -> bool:
     """Whether a router dispatched the item after the instant `at` (a hand-back)."""
     try:
@@ -1267,6 +1304,12 @@ class Worker:
             return gonk.sensor("worker-skips-handed-back"), (
                 f"this worker handed it back already ({seen['outcome']}, {seen['at']}); "
                 f"`worker.py forget {item['number']}` to allow it again"
+            )
+        sibling = sibling_hand_back(item, self.wc.routers, self.cfg.holder)
+        if sibling:
+            return gonk.sensor("worker-skips-handed-back"), (
+                f"gonk worker `{sibling[0]}` handed it back for its newest dispatch already ({sibling[1]}); "
+                "a router's new dispatch allows it again"
             )
         if repo not in busy:
             busy[repo] = self.repo_holder(repo, now, exclude=None)

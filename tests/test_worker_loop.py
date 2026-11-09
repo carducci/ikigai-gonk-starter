@@ -440,6 +440,31 @@ class TheLoop(unittest.TestCase):
         self.assertEqual([i["number"] for i, _ in take], [n])
         self.assertIsNone(worker.Attempts(self.rig.worker(self.ledger).wc.loop_dir).seen("acme", n))
 
+    def test_a_siblings_hand_back_for_the_same_dispatch_is_skipped(self):  # carducci#1562
+        self.rig.configure()
+        n = self.ledger.file("Tried by the other loop", ["worker:w1", "repo:lib"])
+        self.ledger.add_comment(n, f"gonk worker `w1-2` handed acme#{n} back without evidence: exited 1.")
+        take, skip, _ = self.rig.worker(self.ledger).candidates()
+        self.assertEqual(take, [])
+        self.assertIn("gonk worker `w1-2` handed it back for its newest dispatch already", dict(skip)[f"acme#{n}"])
+
+    def test_a_dispatch_after_a_siblings_hand_back_rearms_the_item(self):
+        self.rig.configure()
+        n = self.ledger.file("Tried by the other loop", ["worker:w1", "repo:lib"])
+        self.ledger.add_comment(n, f"Evidence: none\n\ngonk worker `w1-2` handed this back: exited 0.")
+        self.ledger.dispatch(n)
+        take, _, _ = self.rig.worker(self.ledger).candidates()
+        self.assertEqual([i["number"] for i, _ in take], [n])
+
+    def test_a_hand_back_named_by_a_router_or_before_the_dispatch_holds_nothing(self):
+        self.rig.configure()
+        n = self.ledger.file("Old news", ["worker:w1", "repo:lib"], dispatched_by=None)
+        self.ledger.add_comment(n, f"gonk worker `w1-2` handed acme#{n} back without evidence: exited 1.")
+        self.ledger.dispatch(n)
+        self.ledger.add_comment(n, "Note: gonk worker `w1-2` handed this back last time.", author=DISPATCHER)
+        take, _, _ = self.rig.worker(self.ledger).candidates()
+        self.assertEqual([i["number"] for i, _ in take], [n])
+
     def test_a_dispatch_before_the_hand_back_does_not_rearm_it(self):
         n = self.handed_back_item()  # filed with its dispatch, then handed back
         take, skip, _ = self.rig.worker(self.ledger).candidates()
