@@ -212,6 +212,31 @@ class ASiblingsHandBack(unittest.TestCase):  # carducci#1562
         self.assertIn(str(self.state / "one" / "attempts.json"), skip[f"acme#{self.n}"])
         self.assertEqual(self.loop(self.two).run_once().code, worker.NOTHING)
 
+    def test_a_corrupt_sibling_file_skip_says_repair_not_forget(self):
+        (self.state / "one" / "attempts.json").write_text("{not json")
+        why = self.taken(self.two)[1][f"acme#{self.n}"]
+        self.assertIn("repair or remove", why)
+        self.assertNotIn("allows it again", why)
+
+    def test_forget_clears_a_readable_sibling_past_a_corrupt_one_and_names_it(self):
+        three = self.rig.configure("worker-three.toml")
+        corrupt = self.state / "one" / "attempts.json"
+        corrupt.write_text("{not json")
+        mine = self.loop(self.two)
+        mine.attempts.record("acme", self.n, "handed back")
+        readable = Path(self.loop(three).wc.loop_dir) / "attempts.json"
+        worker.Attempts(readable.parent).record("acme", self.n, "handed back")
+        argv = ["--repo", str(self.rig.checkout), "forget", str(self.n), "--config", str(self.two)]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = worker.main(argv, make_ikigai=self.ledger)
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIsNone(mine.attempts.seen("acme", self.n))
+        self.assertIsNone(worker.Attempts(readable.parent).seen("acme", self.n))
+        self.assertIn(str(readable), out.getvalue())
+        self.assertIn(str(corrupt), err.getvalue())
+        self.assertEqual(corrupt.read_text(), "{not json")
+
     def test_no_router_dispatch_and_a_missing_file_are_no_record(self):
         n = self.ledger.file("Undispatched", ["worker:w1", "repo:lib"], dispatched_by=None)
         worker.Attempts(self.state / "one").record("acme", n, "handed back")
