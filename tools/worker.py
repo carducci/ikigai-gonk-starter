@@ -2197,7 +2197,8 @@ def refused_call(denial: dict) -> str:
         what = args.get("command") or args.get("file_path") or json.dumps(args, sort_keys=True)
     else:
         what = args
-    return f"{denial.get('tool_name', '?')}: {' '.join(str(what).split())[:200]}"
+    name = " ".join(str(denial.get("tool_name", "?")).split())[:100]
+    return f"{name}: {' '.join(str(what).split())[:200]}"
 
 
 def refused_lines(refused: list[str]) -> list[str]:
