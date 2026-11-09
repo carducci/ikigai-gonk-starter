@@ -617,8 +617,11 @@ def sibling_hand_back(item: dict, routers: list[str], holder: str | None) -> tup
     dispatcher answered without dispatching (carducci#1562). The ledger says who handed it back. A
     claimed name in a comment can only make a loop skip, never take, and a router's new dispatch
     re-arms the item as before. This loop's own hand-backs stay with `Attempts` and `forget`."""
-    dispatched = [_at(c.get("time")) for c in item.get("comments") or []
-                  if gonk.parse_dispatch(c.get("text") or "") is not None and by_router(c, routers)]
+    dispatched = [
+        _at(c.get("time"))
+        for c in item.get("comments") or []
+        if gonk.parse_dispatch(c.get("text") or "") is not None and by_router(c, routers)
+    ]
     newest = max((t for t in dispatched if t), default=None)
     if newest is None:
         return None
