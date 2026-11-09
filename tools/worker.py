@@ -1968,6 +1968,7 @@ class Worker:
         else:
             body += ["", "No pull request: the agent reported the evidence above instead."]
             body += self.report_lines(ws)[1:41]
+        body += refused_lines(refused)
         if findings := self.findings_lines(ws):  # whole, outside the cut above
             body += ["", "```findings", *findings, "```"]
         body += [

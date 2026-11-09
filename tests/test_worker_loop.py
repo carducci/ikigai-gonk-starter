@@ -734,6 +734,12 @@ class TheLoop(unittest.TestCase):
         log = evidence_comments(self.ledger.items[n])[0].rsplit("log ", 1)[1].rstrip(".")
         self.assertEqual(Path(log).read_text(), "Done: see the PR.\n")
 
+    def test_a_hand_back_names_what_was_refused(self):  # carducci#1490
+        self.rig.agent_flags = ["--json-result", "--refused", "bash scripts/gates.sh"]
+        n = self.ledger.file("Half blocked", ["worker:w1", "repo:lib"])
+        self.assertEqual(self.run_once().code, worker.HANDED_BACK)
+        self.assertIn("- `Bash: bash scripts/gates.sh`", evidence_comments(self.ledger.items[n])[0])
+
     def test_a_report_that_is_not_utf8_still_hands_back_the_pull_request(self):
         # an unreadable report must not cost a green PR its evidence (carducci#251)
         self.rig.agent_flags = ["--report-hex", b"Verdict: discuss\n\xff\xfe\n".hex()]
