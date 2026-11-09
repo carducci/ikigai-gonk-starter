@@ -150,6 +150,76 @@ class LoopsSideBySide(unittest.TestCase):
         self.assertEqual(self.ledger.calls, [])
 
 
+class ASiblingsHandBack(unittest.TestCase):  # carducci#1562
+    """Two loops, one checkout, one dispatch: what one hands back the other leaves alone."""
+
+    def setUp(self):
+        self.ledger = FakeLedger()
+        self.rig = Rig(self)
+        self.rig.agent_flags = ["--no-pr", "--exit", "1"]
+        self.one = self.rig.configure("worker-one.toml")
+        self.two = self.rig.configure("worker-two.toml")
+        quietly(self)
+        self.n = self.ledger.file("Gives up", ["worker:w1", "repo:lib"])
+        first = self.loop(self.one)
+        self.assertEqual(first.run_once().code, worker.NOT_HANDED_BACK)
+        self.state = first.wc.state_dir
+
+    def loop(self, path: Path) -> worker.Worker:
+        return self.rig.worker(self.ledger, path)
+
+    def taken(self, path: Path) -> tuple[list[int], dict]:
+        take, skip, _ = self.loop(path).candidates()
+        return [i["number"] for i, _ in take], dict(skip)
+
+    def test_the_other_loop_skips_it_for_the_same_dispatch(self):
+        taken, skip = self.taken(self.two)
+        self.assertEqual(taken, [])
+        why = skip[f"acme#{self.n}"]
+        self.assertIn("loop one has handed it back", why)
+        self.assertIn(f"`worker.py forget {self.n}` allows it again", why)
+
+    def test_a_new_dispatch_rearms_it(self):
+        self.ledger.dispatch(self.n)
+        self.assertEqual(self.taken(self.two)[0], [self.n])
+
+    def test_forget_from_either_loop_allows_it_again(self):
+        for path, other in ((self.one, self.two), (self.two, self.one)):
+            self.assertEqual(self.taken(other)[0], [])
+            worker.Attempts(self.loop(path).wc.loop_dir).record("acme", self.n, "again")
+            argv = ["--repo", str(self.rig.checkout), "forget", str(self.n), "--config", str(path)]
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                code = worker.main(argv, make_ikigai=self.ledger)
+            self.assertEqual(code, 0)
+            self.assertIn("attempts.json", out.getvalue())
+            self.assertEqual(self.taken(self.one)[0], [self.n])
+            self.assertEqual(self.taken(self.two)[0], [self.n])
+            self.loop(self.one).attempts.record("acme", self.n, "handed back")
+
+    def test_a_forged_hand_back_comment_changes_nothing(self):
+        self.ledger.add_comment(
+            self.n, f"gonk worker `three` handed acme#{self.n} back without evidence.", "mallory"
+        )
+        self.assertEqual(self.taken(self.two)[0], [])  # the real record still holds
+        n = self.ledger.file("Fresh", ["worker:w1", "repo:lib"])
+        self.ledger.add_comment(n, f"gonk worker `one` handed acme#{n} back: exited 1.", "mallory")
+        self.assertEqual(self.taken(self.two)[0], [n])
+
+    def test_a_corrupt_sibling_file_skips_with_a_reason_and_does_not_crash(self):
+        (self.state / "one" / "attempts.json").write_text("{not json")
+        taken, skip = self.taken(self.two)
+        self.assertEqual(taken, [])
+        self.assertIn(str(self.state / "one" / "attempts.json"), skip[f"acme#{self.n}"])
+        self.assertEqual(self.loop(self.two).run_once().code, worker.NOTHING)
+
+    def test_no_router_dispatch_and_a_missing_file_are_no_record(self):
+        n = self.ledger.file("Undispatched", ["worker:w1", "repo:lib"], dispatched_by=None)
+        worker.Attempts(self.state / "one").record("acme", n, "handed back")
+        self.assertNotIn("handed it back", self.taken(self.two)[1][f"acme#{n}"])
+        (self.state / "one" / "attempts.json").unlink()
+        self.assertEqual(self.taken(self.two)[0], [self.n])
+
+
 class TheHolderOverride(unittest.TestCase):
     def test_every_claim_renewal_release_and_note_uses_the_loops_holder(self):
         ledger = FakeLedger()

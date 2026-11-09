@@ -821,8 +821,10 @@ def redispatched_since(item: dict, routers: list[str], at: str | None) -> bool:
 
 
 class Attempts:
-    """The items this worker has handed back, so it never takes one twice. `forget` clears one.
-    A file, not memory, so a restarted worker remembers."""
+    """The items this loop has handed back, so it never takes one twice. `forget` clears one.
+    A file, not memory, so a restarted worker remembers. The loops of one checkout share the
+    memory: each keeps its own file under the shared state_dir, `candidates` reads its siblings'
+    (`sibling_hand_back`), and `forget_everywhere` clears an item from all of them."""
 
     def __init__(self, state_dir: Path) -> None:
         self.path = state_dir / "attempts.json"
@@ -853,6 +855,47 @@ class Attempts:
             return False
         self.path.write_text(json.dumps(table, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return True
+
+
+def attempt_files(state_dir: Path) -> list[Path]:
+    """Every loop's attempts.json of a checkout: the unnamed loop's, then one per named loop."""
+    return [state_dir / "attempts.json", *sorted(state_dir.glob("*/attempts.json"))]
+
+
+def forget_everywhere(state_dir: Path, ledger: str, number: int) -> list[Path]:
+    """Clear `<ledger>#<number>` from every attempts.json of the checkout; the files it cleared."""
+    return [
+        f
+        for f in attempt_files(state_dir)
+        if f.exists() and Attempts(f.parent).forget(ledger, number)
+    ]
+
+
+def sibling_hand_back(
+    item: dict, routers: list[str], ledger: str, state_dir: Path, own: Path
+) -> tuple[str, str] | None:
+    """(who, when) of a SIBLING loop's hand-back since the item's newest router dispatch, else None.
+
+    Read from the loops' own attempts files, never from comment text, which anyone who can write
+    on the ledger can write. A router's later dispatch re-arms the item; with no router dispatch
+    there is nothing to be handed back for. A sibling file that will not parse skips the item,
+    naming the file."""
+    if not any(
+        gonk.parse_dispatch(c.get("text") or "") is not None and by_router(c, routers)
+        for c in item.get("comments") or []
+    ):
+        return None
+    for f in attempt_files(state_dir):
+        if f == own:
+            continue
+        try:
+            seen = Attempts(f.parent).read().get(f"{ledger}#{item['number']}")
+        except (gonk.ConfigError, OSError, AttributeError) as e:
+            return f"{f} is unreadable ({e}), so a sibling loop may have", "unknown time"
+        if isinstance(seen, dict) and not redispatched_since(item, routers, seen.get("at")):
+            loop = f.parent.name if f.parent != state_dir else "the unnamed loop"
+            return f"loop {loop} has", seen.get("at") or "unknown time"
+    return None
 
 
 class RepoLock:
@@ -1686,6 +1729,14 @@ class Worker:
                 f"this worker handed it back already ({seen['outcome']}, {seen['at']}); "
                 f"`worker.py forget {item['number']}` to allow it again"
             )
+        sibling = sibling_hand_back(
+            item, self.wc.routers, self.cfg.ledger, self.wc.state_dir, self.attempts.path
+        )
+        if sibling:
+            return gonk.sensor("worker-skips-handed-back"), (
+                f"{sibling[0]} handed it back for its newest dispatch ({sibling[1]}); "
+                f"`worker.py forget {item['number']}` allows it again"
+            )
         if repo not in busy:
             busy[repo] = self.repo_holder(repo, now, exclude=None)
         if busy[repo]:
@@ -2320,10 +2371,12 @@ def cmd_plan(args, make_ikigai, home) -> int:
 
 def cmd_forget(args, make_ikigai, home) -> int:
     worker = build(args, make_ikigai, home)
-    if worker.attempts.forget(worker.cfg.ledger, args.item):
-        print(f"forgot {worker.cfg.ledger}#{args.item}: this worker may take it again")
+    cleared = forget_everywhere(worker.wc.state_dir, worker.cfg.ledger, args.item)
+    if cleared:
+        files = ", ".join(str(f) for f in cleared)
+        print(f"forgot {worker.cfg.ledger}#{args.item} in {files}: the loops may take it again")
         return 0
-    print(f"{worker.cfg.ledger}#{args.item} was not in {worker.attempts.path}")
+    print(f"{worker.cfg.ledger}#{args.item} was in no attempts.json under {worker.wc.state_dir}")
     return 1
 
 
