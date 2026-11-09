@@ -1118,6 +1118,10 @@ class ContinuingADraftPullRequest(unittest.TestCase):
         self.assertIn("`gh pr create --draft --base feature/due-dates`", prompt)
         self.assertIn("https://github.com/acme/lib/pull/1", prompt)
 
+    def test_the_brief_asks_every_pull_request_to_be_a_draft(self):
+        n, _ = self.run_once("Fix the due-date bug.")
+        self.assertIn("`gh pr create --draft`", self.rig.prompt(n))
+
     def test_the_suggested_command_quotes_the_pull_requests_branch(self):
         git("push", "-q", "origin", "feature/due-dates:feature/$USER", cwd=self.rig.tmp / "theirs")
         self.draft(state="OPEN", headRefName="feature/$USER")
@@ -1197,7 +1201,7 @@ class ContinuingADraftPullRequest(unittest.TestCase):
         self.assertEqual(parent, git("rev-parse", "main", cwd=self.rig.origin).strip())
         prompt = self.rig.prompt(n)
         self.assertIn("made for you from\n   origin/main.", prompt)
-        self.assertIn("open ONE pull request against main with `gh pr create`,", prompt)
+        self.assertIn("open ONE pull request against main with `gh pr create --draft`,", prompt)
 
     def test_a_closed_merged_or_foreign_pull_request_is_refused_before_starting(self):
         cases = [

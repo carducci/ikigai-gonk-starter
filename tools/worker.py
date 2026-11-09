@@ -1483,7 +1483,7 @@ def brief(
 ) -> str:
     """The preamble, then the item. `stacked_on` is the pull request it continues: the branch
     was cut from that PR's head, and the agent opens a draft against it."""
-    base, pr_create = repo.base, "`gh pr create`"
+    base, pr_create = repo.base, "`gh pr create --draft`"
     if stacked_on:
         base = stacked_on["headRefName"]
         pr_create = (
