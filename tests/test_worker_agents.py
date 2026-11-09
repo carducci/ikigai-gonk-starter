@@ -52,6 +52,19 @@ class ALoopsConfiguration(unittest.TestCase):
         self.assertEqual(wc.stop_file, self.base / "codex" / "stop")
         self.assertEqual(wc.stop_files(), [self.base / "codex" / "stop", self.base / "stop"])
 
+    def test_its_own_cert_dir(self):  # carducci#563
+        path = self.rig.configure("worker-codex.toml", labels=CODEX, cert_dir='"/certs/codex"')
+        self.assertEqual(self.load(path).cert_dir, "/certs/codex")
+        cfg = gonk.load(self.rig.checkout)  # over QUIC, it replaces the checkout's bundle
+        cfg.target = gonk.Target(quic="quic://127.0.0.1:1062", cert_dir="/certs/shared")
+        loop = worker.Worker(cfg, self.load(path), FakeLedger())
+        self.assertEqual(loop.cfg.target.cert_dir, "/certs/codex")
+
+    def test_a_cert_dir_on_a_socket_is_refused(self):
+        wc = self.load(self.rig.configure("worker-codex.toml", labels=CODEX, cert_dir='"/c/x"'))
+        with self.assertRaises(gonk.ConfigError):
+            worker.Worker(gonk.load(self.rig.checkout), wc, FakeLedger())
+
     def test_worker_toml_is_the_one_loop_as_before(self):
         wc = self.load(self.rig.configure())
         self.assertIsNone(wc.loop)
@@ -190,6 +203,27 @@ class TheCommandLine(unittest.TestCase):
         args = worker.parser().parse_args(["run", "--config", "x.toml"])
         self.assertEqual(args.config, "x.toml")
         self.assertIsNone(worker.parser().parse_args(["run"]).config)
+
+    def test_a_loops_cert_dir_reaches_the_ikigai_it_runs(self):  # carducci#563
+        (self.rig.checkout / ".gonk" / "local.toml").write_text(
+            'transport = "quic"\nquic = "quic://127.0.0.1:1062"\n'
+            'cert_dir = "/certs/shared"\nholder = "w1"\n'
+        )
+        path = self.rig.configure("worker-codex.toml", labels=CODEX, cert_dir='"/certs/codex"')
+        ledger, targets = FakeLedger(), []
+
+        def make_ikigai(target):  # the client every ledger call of the loop goes through
+            targets.append(target)
+            return ledger
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = worker.main(
+                ["--repo", str(self.rig.checkout), "plan", "--config", str(path)],
+                make_ikigai=make_ikigai,
+            )
+        self.assertEqual(code, worker.NOTHING)
+        self.assertEqual([t.cert_dir for t in targets], ["/certs/codex"])
+        self.assertIn("/certs/codex", gonk.Ikigai(targets[0]).target.mount_args())
 
 
 class InitAgents(unittest.TestCase):

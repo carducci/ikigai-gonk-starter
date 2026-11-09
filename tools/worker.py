@@ -216,6 +216,7 @@ class WorkerConfig:
     usage: dict = field(default_factory=dict)  # the [usage] table: see tools/worker_usage.py
     loop: str | None = None  # from `worker-<loop>.toml`; None for worker.toml, the one loop
     holder: str | None = None  # overrides .gonk/local.toml's holder for this loop's claims
+    cert_dir: str | None = None  # overrides .gonk/local.toml's QUIC client bundle (carducci#563)
     max_per_repo: int = 1  # items of one repository at once, on the ledger and on this machine
     idle_holders: tuple = ()  # claim holders that fence no repository (a router's hold)
 
@@ -410,6 +411,9 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         if problem:
             raise gonk.ConfigError(f"{where}: holder: {problem}")
 
+    cert_dir = t.get("cert_dir")
+    if cert_dir is not None and (not isinstance(cert_dir, str) or not cert_dir):
+        raise gonk.ConfigError(f"{where}: cert_dir: not a path")
     max_per_repo = t.get("max_per_repo", 1)
     if isinstance(max_per_repo, bool) or not isinstance(max_per_repo, int) or max_per_repo < 1:
         raise gonk.ConfigError(
@@ -455,6 +459,7 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         global_stop=state_dir / "stop",
         loop=loop,
         holder=holder,
+        cert_dir=cert_dir,
         max_per_repo=max_per_repo,
         idle_holders=tuple(idle),
         usage=load_usage(t.get("usage", {}), where, command),
@@ -1548,6 +1553,17 @@ class Outcome:
     renewals: int = 0
 
 
+def loop_target(cfg: gonk.Config, wc: WorkerConfig):
+    """The target this loop talks to gonk with: the checkout's, holding the loop's own QUIC
+    client bundle when its worker toml names one (carducci#563)."""
+    if not wc.cert_dir:
+        return cfg.target
+    if not cfg.target.quic:
+        where = cfg.target.describe()
+        raise gonk.ConfigError(f"cert_dir is a QUIC client bundle; {where} is not QUIC")
+    return dataclasses.replace(cfg.target, cert_dir=wc.cert_dir)
+
+
 class Worker:
     def __init__(self, cfg: gonk.Config, wc: WorkerConfig, ikigai, home: Path | None = None):
         if wc.holder:
@@ -1556,6 +1572,8 @@ class Worker:
             # it here is the one place. The machine's identity is unchanged: a holder is a
             # label the ledger records beside the principal, which stays the certificate's.
             cfg = dataclasses.replace(cfg, holder=wc.holder)
+        if wc.cert_dir:  # this loop's own identity, not the checkout's (carducci#563)
+            cfg = dataclasses.replace(cfg, target=loop_target(cfg, wc))
         gonk.need(cfg, "ledger", "target", "holder")
         self.cfg, self.wc = cfg, wc
         self.ledger = Ledger(cfg, ikigai)
@@ -2190,7 +2208,7 @@ def build(args, make_ikigai, home: Path | None) -> Worker:
         wc.keep = True
     # The holder may come from the loop's own configuration, so Worker checks it, after that.
     gonk.need(cfg, "ledger", "target")
-    return Worker(cfg, wc, make_ikigai(cfg.target), home=home)
+    return Worker(cfg, wc, make_ikigai(loop_target(cfg, wc)), home=home)  # carducci#563
 
 
 def cmd_run(args, make_ikigai, home) -> int:
