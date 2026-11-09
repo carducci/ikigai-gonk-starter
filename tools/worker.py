@@ -1871,7 +1871,7 @@ class Worker:
                 raise StepFailed(f"the agent `{argv[0]}` did not start: {e}") from e
             ended, code = self.watch(proc, started, beat)
         exited = datetime.now(UTC)
-        read_agent_log(ws.log)
+        refused = read_agent_log(ws.log)
         took = spoken(time.monotonic() - started)
         where = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
 
@@ -1944,6 +1944,7 @@ class Worker:
                 f"opened no pull request on {ws.branch} and wrote no evidence to its report "
                 f"file. {where}."
             )
+            note += "\n".join(refused_lines(refused))
             if pr_err:
                 note += f" (The pull requests could not be listed: {pr_err})"
             self.release_if_ours(number, note)

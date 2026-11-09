@@ -512,11 +512,12 @@ class TheLoop(unittest.TestCase):
         self.assertEqual([i["number"] for i, _ in take], [waiting])
 
     def test_no_pull_request_and_no_evidence_is_handed_back_once_and_remembered(self):
-        self.rig.agent_flags = ["--no-pr", "--exit", "1"]
+        refused = ["--json-result", "--refused", "git -C /w add x"]  # carducci#1490
+        self.rig.agent_flags = ["--no-pr", "--exit", "1", *refused]
         n = self.ledger.file("Gives up", ["worker:w1", "repo:lib"])
         outcome = self.run_once()
         self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
-        self.released_with_one_note(n, "without evidence", "exited 1")
+        self.released_with_one_note(n, "without evidence", "exited 1", "- `Bash: git -C /w add x`")
 
         # Not taken again by this worker, until forgotten.
         self.assertEqual(self.rig.worker(self.ledger).run_once().code, worker.NOTHING)
