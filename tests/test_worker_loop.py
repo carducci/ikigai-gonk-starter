@@ -741,6 +741,27 @@ class TheLoop(unittest.TestCase):
         self.assertEqual(self.run_once().code, worker.HANDED_BACK)
         self.assertIn("- `Bash: bash scripts/gates.sh`", evidence_comments(self.ledger.items[n])[0])
 
+    def test_an_odd_last_log_line_still_hands_back_the_pull_request(self):  # review of PR #61
+        # the agent's last stdout line is its own text: a result-shaped line it wrote must not
+        # cost a green PR its evidence, whatever is inside it
+        odd = {"type": "result", "permission_denials": [{"tool_name": "Bash", "tool_input": "x"}]}
+        for last in (json.dumps(odd), "[" * 100_000):
+            with self.subTest(last=last[:40]):
+                self.rig.agent_flags = ["--say", last]
+                n = self.ledger.file("Odd last line", ["worker:w1", "repo:lib"])
+                outcome = self.run_once()
+                self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+                self.assertTrue(evidence_comments(self.ledger.items[n]))
+
+    def test_refusals_and_an_unlisted_pr_stay_apart_in_the_note(self):  # review of PR #61
+        self.rig.agent_flags = ["--no-pr", "--exit", "1", "--json-result", "--refused", "git x"]
+        n = self.ledger.file("Gives up", ["worker:w1", "repo:lib"])
+        with mock.patch.object(worker.GitHub, "pull_requests", return_value=([], "gh: boom")):
+            self.assertEqual(self.run_once().code, worker.NOT_HANDED_BACK)
+        note = self.released_with_one_note(n, "- `Bash: git x`", "could not be listed")
+        bullet = next(line for line in note.splitlines() if line.startswith("- `Bash: git x`"))
+        self.assertNotIn("could not be listed", bullet)  # not inside the refused command's item
+
     def test_a_report_that_is_not_utf8_still_hands_back_the_pull_request(self):
         # an unreadable report must not cost a green PR its evidence (carducci#251)
         self.rig.agent_flags = ["--report-hex", b"Verdict: discuss\n\xff\xfe\n".hex()]
@@ -1204,6 +1225,13 @@ class AgentResult(unittest.TestCase):
         self.assertEqual(refused, ["Bash: git -C /w add x"])
         self.assertIn("- `Bash: git -C /w add x`", worker.refused_lines(refused))
         self.assertEqual(worker.refused_lines([]), [])
+
+    def test_stderr_after_the_result_line_still_yields_the_refusals(self):  # review of PR #61
+        # stderr is merged into the log, so a warning can follow the result line
+        denial = {"tool_name": "Bash", "tool_input": {"command": "git -C /w add x"}}
+        line = json.dumps({"type": "result", "result": "Blocked.", "permission_denials": [denial]})
+        text, refused = worker.agent_result(f"{line}\nwarning: a late note on stderr\n")
+        self.assertEqual(refused, ["Bash: git -C /w add x"])
 
 
 class ShortSha(unittest.TestCase):
