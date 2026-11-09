@@ -26,6 +26,27 @@ jobs:
         # tests, so a template that has gone stale fails here.
         run: scripts/gates.sh
 
+  review-tests:
+    # review-once D3 (ledger item 1373, ported from ikigraph): the reviewer's tests on
+    # review/pr-<n> are byte for byte the same at the head. No review branch is a pass.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The review's tests are unchanged
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch -q origin "+refs/heads/review/pr-$PR:refs/remotes/origin/review/pr-$PR" 2>/dev/null || true
+          python3 tools/review_tests.py check --review "origin/review/pr-$PR" --base "origin/$BASE" --head "$HEAD_SHA"
+
   # THE WORKER BOUNDARY, END TO END (worker/README.md). worker-setup.sh creates accounts, mounts
   # and sshd configuration, so it cannot be tested on a developer's machine, and the gates above
   # run only its hermetic halves (worker/tests/probe-test.sh, setup-test.sh). These jobs run it
