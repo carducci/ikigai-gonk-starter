@@ -169,7 +169,8 @@ items the dispatcher marks for them, and work each one in a fresh working tree o
   under that account's home: not a person's checkouts, not a shared directory.
 - **A worker has a budget, and takes an item once.** An agent that runs past its wall-clock
   budget is stopped and the item handed back without evidence. An item the worker handed back
-  is not taken again until `worker.py forget` clears it.
+  is not taken again until `worker.py forget` clears it, and the loops of one checkout share
+  that memory: what one handed back for a dispatch another skips until a router dispatches again.
 - **Usage against the weekly limit.** Between items, before the loop asks `next` and at most
   once an hour, the worker runs the `[usage] command` of `.gonk/worker*.toml` for its agent
   (`tools/worker_usage.py`; Claude Code, Codex and Hermes alike, each loop its own). The command
