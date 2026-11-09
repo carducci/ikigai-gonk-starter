@@ -887,7 +887,8 @@ def forget_everywhere(
 def sibling_hand_back(
     item: dict, routers: list[str], ledger: str, state_dir: Path, own: Path
 ) -> tuple[str, Path | None, str] | None:
-    """(who, unreadable file or None, when) of a SIBLING loop's hand-back since the item's newest router dispatch, else None.
+    """(who, unreadable file or None, when) of a SIBLING loop's hand-back since the item's newest
+    router dispatch, else None.
 
     Read from the loops' own attempts files, never from comment text, which anyone who can write
     on the ledger can write. A router's later dispatch re-arms the item; with no router dispatch
