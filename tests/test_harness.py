@@ -15,6 +15,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -244,6 +245,16 @@ class TheFiringLog(unittest.TestCase):
         self.assertIn("ValueError", err.getvalue())
         self.assertFalse((self.repo / harness.FIRINGS_FILE).exists())
 
+    def test_two_firings_in_one_process_are_both_recorded_with_lf_only(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            harness.fire("evidence-required", "refusal", self.repo)
+            harness.fire("evidence-required", "refusal", self.repo)
+        self.assertEqual(err.getvalue(), "")
+        raw = (self.repo / harness.FIRINGS_FILE).read_bytes()
+        self.assertNotIn(b"\r\n", raw)
+        self.assertEqual([f.seq for f in harness.read_firings(self.repo).firings], [1, 2])
+
     def test_concurrent_writers_keep_the_sequence_dense(self):
         threads = [
             threading.Thread(target=harness.fire, args=("evidence-required", "refusal", self.repo))
@@ -255,6 +266,20 @@ class TheFiringLog(unittest.TestCase):
             t.join()
         seqs = [f.seq for f in harness.read_firings(self.repo).firings]
         self.assertEqual(sorted(seqs), list(range(1, 21)))
+
+    def test_a_held_lock_makes_a_second_writer_wait_and_then_time_out(self):
+        path = self.repo / harness.FIRINGS_FILE
+        path.parent.mkdir(parents=True)
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
+        held, other = os.open(path, flags), os.open(path, flags)
+        self.addCleanup(os.close, other)
+        self.addCleanup(os.close, held)
+        harness._lock(held)
+        with mock.patch.object(harness, "LOCK_WAIT", 0.1):
+            began = time.monotonic()
+            with self.assertRaises(TimeoutError):
+                harness._lock(other)
+        self.assertGreaterEqual(time.monotonic() - began, 0.1)
 
 
 # --------------------------------------------------------------------------- the graph
@@ -508,7 +533,7 @@ class SensorsFire(unittest.TestCase):
     def test_worker_refuses_root(self):
         rig = self.worker_rig()
         err = io.StringIO()
-        with mock.patch.object(worker.os, "geteuid", lambda: 0), contextlib.redirect_stderr(err):
+        with mock.patch.object(worker, "elevated", lambda: True), contextlib.redirect_stderr(err):
             code = worker.main(["--repo", str(rig.checkout), "run", "--once"], FakeLedger())
         self.assertEqual(code, worker.CONFIG)
         assert_fired(self, rig.checkout, "worker-refuses-root")
