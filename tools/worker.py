@@ -1245,11 +1245,17 @@ def run_prepare(
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=subprocess.STDOUT,
-                    start_new_session=True,
+                    **(  # as the agent starts: a group of its own, so a stop reaches only it
+                        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                        if os.name == "nt"
+                        else {"start_new_session": True}
+                    ),
                 )
             except OSError as e:
                 problem = f"did not start: {e}"
             else:
+                if os.name == "nt":
+                    job_for(proc)
                 deadline = time.monotonic() + repo.prepare_timeout
                 while True:
                     try:
@@ -1268,6 +1274,8 @@ def run_prepare(
                         continue
                     stop_process(proc, grace)
                     break
+                if os.name == "nt":
+                    close_job(proc)
             if problem:
                 out.seek(0)
                 tail = out.read().decode("utf-8", "replace").splitlines()[-20:]
