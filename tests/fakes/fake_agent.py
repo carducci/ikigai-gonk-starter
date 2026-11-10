@@ -4,8 +4,8 @@ would, and does what its flags say: record its brief, sleep, edit a file, commit
 branch and "open a pull request" through the stub gh, or report evidence without one.
 
     fake_agent.py --record <dir> --gh "<argv of the stub gh>" --branch B --item N
-                  [--sleep S] [--no-pr] [--draft-base B]
-                  [--evidence URL --report-file P] [--report TEXT]
+                  [--sleep S] [--child] [--deaf-child] [--stubborn] [--no-pr] [--draft-base B]
+                  [--evidence URL --report-file P] [--report TEXT] [--note TEXT]
                   [--report-hex HEX] [--confined] [--say TEXT] [--chatter TEXT] [--exit N]
                   -- <prompt>
 
@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -39,11 +41,15 @@ def main() -> int:
     p.add_argument("--branch", required=True)
     p.add_argument("--item", required=True)
     p.add_argument("--sleep", type=float, default=0)
+    p.add_argument("--child", action="store_true")  # start a child that outlives a polite stop
+    p.add_argument("--deaf-child", action="store_true")  # the child alone ignores Ctrl+Break
+    p.add_argument("--stubborn", action="store_true")  # ignore Ctrl+Break (Windows)
     p.add_argument("--no-pr", action="store_true")
     p.add_argument("--draft-base", help="open the pull request as a draft against this branch")
     p.add_argument("--evidence")
     p.add_argument("--report-file")
     p.add_argument("--report", help="text for the report file, whether or not it opens a PR")
+    p.add_argument("--note", help="this text, not a URL, for the report file")
     p.add_argument("--findings", help="text for findings.jsonl, beside the report file")
     p.add_argument("--findings-at-root", help="text for findings.jsonl at the worktree root")
     p.add_argument("--report-hex", help="bytes for the report file, in hex: not always UTF-8")
@@ -61,6 +67,17 @@ def main() -> int:
     (record / f"prompt-{args.item}.md").write_text(args.prompt)
     (record / f"cwd-{args.item}").write_text(str(Path.cwd()))
     (record / f"started-{args.item}").write_text(str(time.time()))
+    if args.stubborn and hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+    if args.child or args.deaf_child:
+        # SIG_IGN is not inherited, so the child sets it itself
+        deaf = (
+            "import signal; signal.signal(signal.SIGBREAK, signal.SIG_IGN); "
+            if args.deaf_child
+            else ""
+        )
+        child = subprocess.Popen([sys.executable, "-c", deaf + "import time; time.sleep(300)"])
+        (record / f"child-{args.item}").write_text(f"{os.getpid()} {child.pid}")
     time.sleep(args.sleep)
 
     if args.chatter:
@@ -72,6 +89,8 @@ def main() -> int:
         report.write_text(f"{args.evidence}\nIt does not reproduce: see the run.\n")
     if args.report is not None and report:
         report.write_text(args.report)
+    if args.note is not None and report:
+        report.write_text(args.note)
     if args.findings is not None and report:
         (report.parent / "findings.jsonl").write_text(args.findings)
     if args.findings_at_root is not None:

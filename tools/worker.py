@@ -62,7 +62,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import fcntl
 import json
 import os
 import plistlib
@@ -79,6 +78,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -520,7 +524,9 @@ def work_root(text: str, home: Path, repo: Path | None = None) -> Path:
             f"work_root = {text!r} is relative; write it as ~/<dir>",
         )
     root = root.resolve()
-    if root == home or home not in root.parents:
+    # Windows paths differ in case without differing in place; normcase is the identity elsewhere
+    key, home_key = Path(os.path.normcase(root)), Path(os.path.normcase(home))
+    if key == home_key or home_key not in key.parents:
         raise gonk.refuse(
             "worker-work-root-in-home",
             repo,
@@ -535,6 +541,8 @@ def work_root(text: str, home: Path, repo: Path | None = None) -> Path:
 
 def log(message: str) -> None:
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # A message may carry text the agent wrote; keep each of its lines inside this one entry.
+    message = message.replace("\r", "").replace("\n", "\n    ")
     print(f"{stamp} worker: {message}", flush=True)
 
 
@@ -912,6 +920,28 @@ def sibling_hand_back(
     return None
 
 
+def _try_lock(handle) -> bool:
+    """An exclusive, non-blocking lock on an open file: flock on POSIX, byte 0 with msvcrt on
+    Windows (the same lock, by another name). False when another process holds it."""
+    try:
+        if os.name == "nt":
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(handle) -> None:
+    if os.name == "nt":
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 class RepoLock:
     """Up to `slots` items of one repository on this machine: an exclusive lock on one of
     `slots` files per repository (`<repo>.lock`, then `<repo>.2.lock`, ...), released when the
@@ -929,9 +959,7 @@ class RepoLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         for path in self.paths:
             handle = path.open("a")
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+            if not _try_lock(handle):
                 handle.close()
                 continue
             self.handle, self.path = handle, path
@@ -940,7 +968,7 @@ class RepoLock:
 
     def release(self) -> None:
         if self.handle is not None:
-            fcntl.flock(self.handle, fcntl.LOCK_UN)
+            _unlock(self.handle)
             self.handle.close()
             self.handle = None
 
@@ -960,19 +988,17 @@ class CloneLock:
         handle = self.path.open("a")
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if _try_lock(handle):
                 self.handle = handle
                 return True
-            except OSError:
-                if deadline is not None and time.monotonic() >= deadline:
-                    handle.close()
-                    return False
-                time.sleep(0.2)
+            if deadline is not None and time.monotonic() >= deadline:
+                handle.close()
+                return False
+            time.sleep(0.2)
 
     def release(self) -> None:
         if self.handle is not None:
-            fcntl.flock(self.handle, fcntl.LOCK_UN)
+            _unlock(self.handle)
             self.handle.close()
             self.handle = None
 
@@ -1219,11 +1245,17 @@ def run_prepare(
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=subprocess.STDOUT,
-                    start_new_session=True,
+                    **(  # as the agent starts: a group of its own, so a stop reaches only it
+                        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                        if os.name == "nt"
+                        else {"start_new_session": True}
+                    ),
                 )
             except OSError as e:
                 problem = f"did not start: {e}"
             else:
+                if os.name == "nt":
+                    job_for(proc)
                 deadline = time.monotonic() + repo.prepare_timeout
                 while True:
                     try:
@@ -1242,6 +1274,8 @@ def run_prepare(
                         continue
                     stop_process(proc, grace)
                     break
+                if os.name == "nt":
+                    close_job(proc)
             if problem:
                 out.seek(0)
                 tail = out.read().decode("utf-8", "replace").splitlines()[-20:]
@@ -1581,10 +1615,77 @@ def agent_argv(command: list[str], values: dict[str, str]) -> list[str]:
     return out
 
 
+def job_for(proc: subprocess.Popen) -> None:
+    """Windows: put the agent in a job object that dies with the worker. Its children join the
+    job, so one call can end the tree even after the agent, their parent, has gone."""
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateJobObjectW.restype = wintypes.HANDLE
+    k.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    proc.job = None
+    job = k.CreateJobObjectW(None, None)
+    if not job:
+        return
+    # JOBOBJECT_EXTENDED_LIMIT_INFORMATION is 144 bytes on x64 (112 on x86); the
+    # LimitFlags DWORD sits at offset 16 either way.
+    info = ctypes.create_string_buffer(144 if ctypes.sizeof(ctypes.c_void_p) == 8 else 112)
+    ctypes.c_uint32.from_buffer(info, 16).value = 0x2000  # KILL_ON_JOB_CLOSE
+    process = k.OpenProcess(0x0101, False, proc.pid)  # SET_QUOTA | TERMINATE
+    if (
+        process
+        and k.SetInformationJobObject(job, 9, info, len(info))
+        and k.AssignProcessToJobObject(job, process)
+    ):
+        proc.job = job
+    else:
+        k.CloseHandle(job)  # no job: stop_process falls back to taskkill
+    if process:
+        k.CloseHandle(process)
+
+
+def close_job(proc: subprocess.Popen) -> None:
+    """Windows: let go of the agent's job once it has exited. Closing it kills what is left."""
+    job, proc.job = getattr(proc, "job", None), None
+    if job:
+        import ctypes
+
+        ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(job))
+
+
 def stop_process(proc: subprocess.Popen, grace: int) -> None:
     """SIGTERM to the agent's whole process group, then SIGKILL after the grace period. The
     agent was started in a session of its own, so its children go with it, and the worker
-    (in another group) is not signaled."""
+    (in another group) is not signaled. On Windows it is Ctrl+Break to the agent's process group,
+    then its job object ended whatever the agent did, since a child can ignore the break and
+    outlive its parent where `taskkill /T` cannot find it; `taskkill /T /F` if there is no job."""
+    if os.name == "nt":
+        try:
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+            proc.wait(timeout=grace)
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # no console to break into, or it ignored the break
+        job = getattr(proc, "job", None)
+        if job:
+            import ctypes
+
+            ctypes.WinDLL("kernel32").TerminateJobObject(ctypes.c_void_p(job), 1)
+        elif proc.poll() is None:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        proc.wait(timeout=30)
+        close_job(proc)
+        return
     for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 30)):
         try:
             os.killpg(proc.pid, sig)
@@ -1955,11 +2056,19 @@ class Worker:
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=subprocess.STDOUT,
-                    start_new_session=True,
+                    **(
+                        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                        if os.name == "nt"
+                        else {"start_new_session": True}
+                    ),
                 )
             except OSError as e:
                 raise StepFailed(f"the agent `{argv[0]}` did not start: {e}") from e
+            if os.name == "nt":
+                job_for(proc)
             ended, code = self.watch(proc, started, beat)
+            if os.name == "nt":
+                close_job(proc)
         exited = datetime.now(UTC)
         refused = read_agent_log(ws.log)
         took = spoken(time.monotonic() - started)
@@ -2029,16 +2138,28 @@ class Worker:
         evidence = prs[0].url if prs else self.reported_evidence(ws)
         if not evidence:
             gonk.fire("worker-no-evidence", "refusal", self.cfg.repo)
+            try:
+                said = ws.report.read_text(encoding="utf-8").splitlines()
+            except FileNotFoundError:
+                said = []
+            said = [line for line in said if line.strip()][:40]
             note = (
                 f"gonk worker `{holder}` handed {display} back without evidence: {agent}, "
-                f"opened no pull request on {ws.branch} and wrote no evidence to its report "
-                f"file. {where}."
+                f"opened no pull request on {ws.branch} and "
+                + (
+                    "wrote no evidence URL to its report file"
+                    if said
+                    else "wrote no evidence to its report file"
+                )
+                + f". {where}."
             )
             note += "\n".join(refused_lines(refused))
             if pr_err and refused:
                 note += f"\n\nThe pull requests could not be listed: {pr_err}"
             elif pr_err:
                 note += f" (The pull requests could not be listed: {pr_err})"
+            if said:
+                note += "\n\nThe agent's report:\n" + "\n".join(said)
             self.release_if_ours(number, note)
             return Outcome(NOT_HANDED_BACK, note, prs=prs)
 
@@ -2342,8 +2463,18 @@ def build(args, make_ikigai, home: Path | None) -> Worker:
     return Worker(cfg, wc, make_ikigai(loop_target(cfg, wc)), home=home)  # carducci#563
 
 
+def elevated() -> bool:
+    """Root, or on Windows an administrator's elevated token (the one thing tests fake)."""
+    if os.name == "nt":
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
 def cmd_run(args, make_ikigai, home) -> int:
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
+    if elevated():
+        who = "elevated (as an administrator)" if os.name == "nt" else "as root"
         try:
             repo = Path(args.repo).resolve() if args.repo else gonk.find_repo(Path.cwd())
         except gonk.ConfigError:
@@ -2351,7 +2482,7 @@ def cmd_run(args, make_ikigai, home) -> int:
         raise gonk.refuse(
             "worker-refuses-root",
             repo,
-            "refusing to run as root: a worker runs as an account of its own",
+            f"refusing to run {who}: a worker runs as an account of its own",
         )
     worker = build(args, make_ikigai, home)
     if args.once:
@@ -2366,6 +2497,8 @@ def cmd_run(args, make_ikigai, home) -> int:
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
+    if hasattr(signal, "SIGBREAK"):  # Windows: Ctrl+Break is the stop SIGTERM cannot be there
+        signal.signal(signal.SIGBREAK, on_signal)
     return worker.loop()
 
 
