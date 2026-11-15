@@ -174,5 +174,61 @@ class PushReviewBranches(unittest.TestCase):
         self.assertFalse(self.on_origin("refs/heads/review/pr-414"))
 
 
+# The reviewer agent the loop runs below: it does what a review brief says (fetch the PR's head,
+# detach to it, `git switch -c review/pr-<n>`), and commits nothing: it found no defect.
+REVIEW_WITHOUT_A_COMMIT = """\
+import subprocess, sys
+for argv in (["fetch", "-q", "origin", "pr-7"], ["checkout", "-q", "--detach", "FETCH_HEAD"],
+             ["switch", "-q", "-c", "review/pr-7"]):
+    subprocess.run(["git", *argv], check=True)
+with open(sys.argv[1], "w") as f:
+    f.write("https://github.com/acme/lib/pull/7#pullrequestreview-1\\nREVIEW: clean\\n")
+"""
+
+
+class TheReviewerLoopPushesOnlyAReview(unittest.TestCase):
+    """carducci#1705, through the loop: the worktree starts at origin/main, and the agent detaches
+    to the PR head it reviews. A review/pr-<n> cut there with no commit of the agent's is the PR
+    head, not a review: it must not be pushed, and the hand-back must not say `pushed`."""
+
+    def setUp(self):
+        import contextlib
+        import io
+        import json
+
+        from worker_support import FakeLedger, Rig
+        from worker_support import git as rgit
+
+        self.json, self.rgit = json, rgit
+        self.ledger = FakeLedger()
+        self.rig = Rig(self)
+        quiet = contextlib.redirect_stdout(io.StringIO())
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
+        seed = self.rig.tmp / "seed"  # the PR's head, one commit above main: pull/7/head
+        rgit("switch", "-q", "-c", "pr-7", cwd=seed)
+        (seed / "feature.py").write_text("y = 2\n")
+        rgit("add", "feature.py", cwd=seed)
+        rgit("commit", "-q", "-m", "the PR", cwd=seed)
+        rgit("push", "-q", str(self.rig.origin), "pr-7", cwd=seed)
+        self.head = rgit("rev-parse", "HEAD", cwd=seed).strip()
+
+    def test_a_review_branch_at_the_pr_head_is_not_pushed(self):
+        agent = self.rig.tmp / "reviewer.py"
+        agent.write_text(REVIEW_WITHOUT_A_COMMIT)
+        path = self.rig.configure(labels='["worker:w1", "review"]')
+        text = path.read_text()
+        start = text.index("command = ", text.index("[agent]"))
+        end = text.index("\n", start)
+        command = self.json.dumps([sys.executable, str(agent), "{report_file}", "{prompt_file}"])
+        path.write_text(text[:start] + f"command = {command}" + text[end:])
+        n = self.ledger.file("Review PR 7", ["worker:w1", "review", "repo:lib"])
+        self.rig.worker(self.ledger).run_once()
+        said = "\n".join(c["text"] for c in self.ledger.human_comments(n))
+        self.assertIn(f"review branch review/pr-7 at {self.head[:12]}", said)
+        self.assertNotIn(f"review/pr-7 at {self.head[:12]}: pushed", said)
+        self.assertNotIn("review/pr-7", self.rig.branches())
+
+
 if __name__ == "__main__":
     unittest.main()
