@@ -2152,7 +2152,11 @@ class Worker:
             return Outcome(NOT_HANDED_BACK, note.splitlines()[0], prs=prs)
 
         # A reviewer's failing tests go up before anything else is reported (review-once).
-        review_lines = [] if review_before is None else push_review_branches(ws.path, review_before, reviewed)
+        review_lines = (
+            []
+            if review_before is None
+            else push_review_branches(ws.path, review_before, reviewed)
+        )
         evidence = prs[0].url if prs else self.reported_evidence(ws)
         if not evidence:
             gonk.fire("worker-no-evidence", "refusal", self.cfg.repo)
