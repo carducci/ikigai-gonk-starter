@@ -1138,8 +1138,8 @@ def push_review_branches(
     another item's, left in the shared clone, and is neither pushed nor named. So is one checked
     out in another worktree: that item is running now. If the listing at the start failed, what
     the agent made cannot be told from what was there, so nothing is pushed. Given `reviewed`
-    (the sha the worktree started at), a branch with no commit beyond it is not pushed: it is
-    the reviewed head, not a review, and the line says so."""
+    (the sha the worktree started at), or beyond the commit it was created at, a branch is not
+    pushed: it is the reviewed head, not a review, and the line says so."""
     if isinstance(before, UnlistedTips):
         return [f"- review branches not pushed: the listing at the start failed: {before.why}"]
     tips, err = review_refs(path)
@@ -1154,14 +1154,24 @@ def push_review_branches(
             lines.append(f"- review branch {name}: not pushed (only review/pr-<n> is)")
             continue
         sha = git("rev-parse", "--short=12", f"refs/heads/{name}", cwd=path).stdout.strip()
-        if reviewed:
-            ahead = git("rev-list", "--count", f"{reviewed}..refs/heads/{name}", cwd=path)
-            if ahead.returncode == 0 and ahead.stdout.strip() == "0":
-                lines.append(
-                    f"- review branch {name} at {sha}: not pushed: "
-                    f"review branch has no commits beyond {reviewed[:12]}"
-                )
+        # The worktree starts at main; the agent detaches to the PR head and cuts the branch
+        # there, so the commit the branch was created at is the reviewed head too.
+        born = git("reflog", "show", "--format=%H", f"refs/heads/{name}", cwd=path)
+        created = born.stdout.split()[-1:] if born.returncode == 0 else []
+        bare = None
+        for base in dict.fromkeys([reviewed, *created]):
+            if not base:
                 continue
+            ahead = git("rev-list", "--count", f"{base}..refs/heads/{name}", cwd=path)
+            if ahead.returncode == 0 and ahead.stdout.strip() == "0":
+                bare = base
+                break
+        if bare:
+            lines.append(
+                f"- review branch {name} at {sha}: not pushed: "
+                f"review branch has no commits beyond {bare[:12]}"
+            )
+            continue
         done = git("push", "--quiet", "origin", f"refs/heads/{name}:refs/heads/{name}", cwd=path)
         if done.returncode == 0:
             full = git("rev-parse", f"refs/heads/{name}", cwd=path).stdout.strip()
