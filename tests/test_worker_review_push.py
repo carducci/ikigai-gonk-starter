@@ -149,7 +149,7 @@ class PushReviewBranches(unittest.TestCase):
     def test_a_reviewer_loop_pushes_and_a_coder_loop_does_not(self):
         src = (ROOT / "tools" / "worker.py").read_text()
         self.assertIn('review_before = review_refs(ws.path)[0] if "review" in self.wc.labels', src)
-        self.assertIn("if review_before is None\n            else push_review_branches(", src)
+        self.assertIn("[] if review_before is None else push_review_branches(", src)
         self.assertIn("push_review_branches(ws.path, review_before, reviewed)", src)
 
     def test_a_branch_with_a_commit_above_the_reviewed_sha_is_pushed_at_that_commit(self):

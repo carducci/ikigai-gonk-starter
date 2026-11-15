@@ -2153,9 +2153,7 @@ class Worker:
 
         # A reviewer's failing tests go up before anything else is reported (review-once).
         review_lines = (
-            []
-            if review_before is None
-            else push_review_branches(ws.path, review_before, reviewed)
+            [] if review_before is None else push_review_branches(ws.path, review_before, reviewed)
         )
         evidence = prs[0].url if prs else self.reported_evidence(ws)
         if not evidence:
