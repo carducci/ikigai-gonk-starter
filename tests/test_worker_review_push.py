@@ -149,7 +149,28 @@ class PushReviewBranches(unittest.TestCase):
     def test_a_reviewer_loop_pushes_and_a_coder_loop_does_not(self):
         src = (ROOT / "tools" / "worker.py").read_text()
         self.assertIn('review_before = review_refs(ws.path)[0] if "review" in self.wc.labels', src)
-        self.assertIn("else push_review_branches(ws.path, review_before)", src)
+        self.assertIn("else push_review_branches(ws.path, review_before, reviewed)", src)
+
+    def test_a_branch_with_a_commit_above_the_reviewed_sha_is_pushed_at_that_commit(self):
+        reviewed = git(self.work, "rev-parse", "main")
+        git(self.work, "switch", "-q", "-c", "review/pr-414")
+        (self.work / "test_flags.py").write_text("assert False\n")
+        git(self.work, "add", "-A")
+        git(self.work, "commit", "-q", "-m", "review: a failing test")
+        tip = git(self.work, "rev-parse", "HEAD")
+        git(self.work, "switch", "-q", "--detach", "main")
+        lines = worker.push_review_branches(self.work, {}, reviewed)
+        self.assertEqual([f"- review branch review/pr-414 at {tip[:12]}: pushed"], lines)
+        self.assertEqual(tip, self.on_origin("refs/heads/review/pr-414"))
+
+    def test_a_branch_at_the_reviewed_sha_is_not_pushed_and_says_why(self):
+        reviewed = git(self.work, "rev-parse", "main")
+        git(self.work, "branch", "review/pr-414", reviewed)  # the PR head; no review commit
+        lines = worker.push_review_branches(self.work, {}, reviewed)
+        self.assertEqual(1, len(lines))
+        self.assertIn(f"review branch has no commits beyond {reviewed[:12]}", lines[0])
+        self.assertNotIn(": pushed", lines[0])
+        self.assertFalse(self.on_origin("refs/heads/review/pr-414"))
 
 
 if __name__ == "__main__":

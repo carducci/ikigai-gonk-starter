@@ -1128,14 +1128,18 @@ def branches_of_other_worktrees(path: Path) -> set[str]:
     return theirs
 
 
-def push_review_branches(path: Path, before: dict[str, str] | None = None) -> list[str]:
+def push_review_branches(
+    path: Path, before: dict[str, str] | None = None, reviewed: str | None = None
+) -> list[str]:
     """A reviewer's failing tests (review-once D3): push each local `review/pr-<n>` branch in the
     worktree to the same name on origin, never forced, and say what happened, one line each. Any
     other branch under `review/` is named and left alone. The agent commits; only this pushes.
     Given `before` (the tips when the agent started), a branch it didn't make or move is
     another item's, left in the shared clone, and is neither pushed nor named. So is one checked
     out in another worktree: that item is running now. If the listing at the start failed, what
-    the agent made cannot be told from what was there, so nothing is pushed."""
+    the agent made cannot be told from what was there, so nothing is pushed. Given `reviewed`
+    (the sha the worktree started at), a branch with no commit beyond it is not pushed: it is
+    the reviewed head, not a review, and the line says so."""
     if isinstance(before, UnlistedTips):
         return [f"- review branches not pushed: the listing at the start failed: {before.why}"]
     tips, err = review_refs(path)
@@ -1150,9 +1154,22 @@ def push_review_branches(path: Path, before: dict[str, str] | None = None) -> li
             lines.append(f"- review branch {name}: not pushed (only review/pr-<n> is)")
             continue
         sha = git("rev-parse", "--short=12", f"refs/heads/{name}", cwd=path).stdout.strip()
+        if reviewed:
+            ahead = git("rev-list", "--count", f"{reviewed}..refs/heads/{name}", cwd=path)
+            if ahead.returncode == 0 and ahead.stdout.strip() == "0":
+                lines.append(
+                    f"- review branch {name} at {sha}: not pushed: "
+                    f"review branch has no commits beyond {reviewed[:12]}"
+                )
+                continue
         done = git("push", "--quiet", "origin", f"refs/heads/{name}:refs/heads/{name}", cwd=path)
         if done.returncode == 0:
-            lines.append(f"- review branch {name} at {sha}: pushed")
+            full = git("rev-parse", f"refs/heads/{name}", cwd=path).stdout.strip()
+            remote = git("ls-remote", "origin", f"refs/heads/{name}", cwd=path).stdout.split()
+            if remote[:1] == [full]:
+                lines.append(f"- review branch {name} at {sha}: pushed")
+            else:
+                lines.append(f"- review branch {name} at {sha}: NOT confirmed on origin")
         else:
             lines.append(f"- review branch {name} at {sha}: NOT pushed: {said(done)}")
     return lines
@@ -2046,6 +2063,7 @@ class Worker:
             },
         )
         review_before = review_refs(ws.path)[0] if "review" in self.wc.labels else None
+        reviewed = git("rev-parse", "HEAD", cwd=ws.path).stdout.strip() or None
         log(f"{display}: running `{argv[0]}` in {ws.path} on {ws.branch} (log {ws.log})")
         started = time.monotonic()
         with ws.log.open("w", encoding="utf-8") as out:
@@ -2134,7 +2152,7 @@ class Worker:
             return Outcome(NOT_HANDED_BACK, note.splitlines()[0], prs=prs)
 
         # A reviewer's failing tests go up before anything else is reported (review-once).
-        review_lines = [] if review_before is None else push_review_branches(ws.path, review_before)
+        review_lines = [] if review_before is None else push_review_branches(ws.path, review_before, reviewed)
         evidence = prs[0].url if prs else self.reported_evidence(ws)
         if not evidence:
             gonk.fire("worker-no-evidence", "refusal", self.cfg.repo)
