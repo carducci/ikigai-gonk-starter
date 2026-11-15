@@ -1128,6 +1128,20 @@ def branches_of_other_worktrees(path: Path) -> set[str]:
     return theirs
 
 
+def unreviewed_base(path: Path, name: str, tip: str, reviewed: str | None) -> str | None:
+    """The commit a review branch adds nothing to, or None if it adds a commit. That is `reviewed`
+    (the sha the worktree started at) when the tip has nothing beyond it, or else the commit the
+    branch was created at (its oldest reflog entry): the reviewer detaches to the PR head and cuts
+    the branch there, so a tip still at its creation commit is the PR head, not a review."""
+    if reviewed:
+        ahead = git("rev-list", "--count", f"{reviewed}..refs/heads/{name}", cwd=path)
+        if ahead.returncode == 0 and ahead.stdout.strip() == "0":
+            return reviewed
+    made = git("reflog", "show", "--format=%H", f"refs/heads/{name}", cwd=path)
+    shas = made.stdout.split() if made.returncode == 0 else []
+    return shas[-1] if shas and shas[-1] == tip else None
+
+
 def push_review_branches(
     path: Path, before: dict[str, str] | None = None, reviewed: str | None = None
 ) -> list[str]:
@@ -1154,14 +1168,13 @@ def push_review_branches(
             lines.append(f"- review branch {name}: not pushed (only review/pr-<n> is)")
             continue
         sha = git("rev-parse", "--short=12", f"refs/heads/{name}", cwd=path).stdout.strip()
-        if reviewed:
-            ahead = git("rev-list", "--count", f"{reviewed}..refs/heads/{name}", cwd=path)
-            if ahead.returncode == 0 and ahead.stdout.strip() == "0":
-                lines.append(
-                    f"- review branch {name} at {sha}: not pushed: "
-                    f"review branch has no commits beyond {reviewed[:12]}"
-                )
-                continue
+        base = unreviewed_base(path, name, tip, reviewed)
+        if base:
+            lines.append(
+                f"- review branch {name} at {sha}: not pushed: "
+                f"review branch has no commits beyond {base[:12]}"
+            )
+            continue
         done = git("push", "--quiet", "origin", f"refs/heads/{name}:refs/heads/{name}", cwd=path)
         if done.returncode == 0:
             full = git("rev-parse", f"refs/heads/{name}", cwd=path).stdout.strip()
