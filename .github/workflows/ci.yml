@@ -41,7 +41,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: setup, check green, re-create each leak, check red, repair
-        run: sudo -E ./worker/tests/ci-linux.sh
+        # sudo on ubuntu-26.04 ignores -E; pass the two variables the script's guard reads.
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT ./worker/tests/ci-linux.sh
 
   worker-macos:
     name: worker boundary (macos)
