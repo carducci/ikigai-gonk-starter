@@ -44,6 +44,9 @@ class PushReviewBranches(unittest.TestCase):
         git(self.work, "add", "-A")
         git(self.work, "commit", "-q", "-m", "base")
         git(self.work, "push", "-q", "origin", "HEAD:main")
+        base = git(self.work, "rev-parse", "HEAD")
+        for n in (7, 59, 71):  # the pull requests under review, at the sha reviewed
+            git(self.origin, "update-ref", f"refs/pull/{n}/head", base)
         self._env = dict(os.environ)
         os.environ.update(ENV)
         self.addCleanup(lambda: (os.environ.clear(), os.environ.update(self._env)))
@@ -65,6 +68,22 @@ class PushReviewBranches(unittest.TestCase):
         self.assertEqual(1, len(lines))
         self.assertRegex(lines[0], r"^- review branch review/pr-7 at [0-9a-f]{12}: pushed$")
         self.assertTrue(self.on_origin("refs/heads/review/pr-7"))
+
+    def test_the_remote_ref_is_the_agents_commit(self):
+        self.commit_test("review/pr-7")
+        tip = git(self.work, "rev-parse", "review/pr-7")
+        lines = worker.push_review_branches(self.work)
+        self.assertEqual(tip, self.on_origin("refs/heads/review/pr-7"))
+        self.assertIn(f"at {tip[:12]}: pushed", lines[0])
+
+    def test_a_branch_with_no_commit_above_the_reviewed_sha_is_not_pushed(self):
+        git(self.work, "branch", "review/pr-7", "main")  # cut from the PR head, nothing added
+        lines = worker.push_review_branches(self.work)
+        base = git(self.work, "rev-parse", "--short=12", "main")
+        self.assertEqual(
+            [f"- review branch review/pr-7 has no commits beyond {base}: NOT pushed"], lines
+        )
+        self.assertFalse(self.on_origin("refs/heads/review/pr-7"))
 
     def test_no_review_branch_says_nothing(self):
         self.assertEqual([], worker.push_review_branches(self.work))
