@@ -1155,11 +1155,20 @@ def push_review_branches(
             continue
         sha = git("rev-parse", "--short=12", f"refs/heads/{name}", cwd=path).stdout.strip()
         if reviewed:
-            ahead = git("rev-list", "--count", f"{reviewed}..refs/heads/{name}", cwd=path)
-            if ahead.returncode == 0 and ahead.stdout.strip() == "0":
+            # The agent detaches to the PR head and cuts the branch there, so the head it
+            # reviewed is where the branch was created, as well as where the worktree started.
+            made = git("reflog", "show", "--format=%H", f"refs/heads/{name}", cwd=path)
+            born = made.stdout.split()[-1:] if made.returncode == 0 else []
+            empty = None
+            for base in [reviewed, *born]:
+                ahead = git("rev-list", "--count", f"{base}..refs/heads/{name}", cwd=path)
+                if ahead.returncode == 0 and ahead.stdout.strip() == "0":
+                    empty = base
+                    break
+            if empty:
                 lines.append(
                     f"- review branch {name} at {sha}: not pushed: "
-                    f"review branch has no commits beyond {reviewed[:12]}"
+                    f"review branch has no commits beyond {empty[:12]}"
                 )
                 continue
         done = git("push", "--quiet", "origin", f"refs/heads/{name}:refs/heads/{name}", cwd=path)
