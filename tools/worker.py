@@ -1150,9 +1150,27 @@ def push_review_branches(path: Path, before: dict[str, str] | None = None) -> li
             lines.append(f"- review branch {name}: not pushed (only review/pr-<n> is)")
             continue
         sha = git("rev-parse", "--short=12", f"refs/heads/{name}", cwd=path).stdout.strip()
+        # The reviewed sha is the PR's head. A branch with nothing above it holds no review.
+        number = name.removeprefix("review/pr-")
+        fetched = git("fetch", "--quiet", "origin", f"refs/pull/{number}/head", cwd=path)
+        if fetched.returncode != 0:
+            why = f"the PR head could not be read: {said(fetched)}"
+            lines.append(f"- review branch {name} at {sha}: NOT pushed: {why}")
+            continue
+        reviewed = git("rev-parse", "--short=12", "FETCH_HEAD", cwd=path).stdout.strip()
+        ahead = git("rev-list", "--count", f"FETCH_HEAD..refs/heads/{name}", cwd=path)
+        if ahead.returncode != 0 or ahead.stdout.strip() in ("", "0"):
+            lines.append(f"- review branch {name} has no commits beyond {reviewed}: NOT pushed")
+            continue
         done = git("push", "--quiet", "origin", f"refs/heads/{name}:refs/heads/{name}", cwd=path)
         if done.returncode == 0:
-            lines.append(f"- review branch {name} at {sha}: pushed")
+            full = git("rev-parse", f"refs/heads/{name}", cwd=path).stdout.strip()
+            remote = git("ls-remote", "origin", f"refs/heads/{name}", cwd=path).stdout.split()
+            if remote[:1] == [full]:
+                lines.append(f"- review branch {name} at {sha}: pushed")
+            else:
+                has = (remote or ["nothing"])[0][:12]
+                lines.append(f"- review branch {name} at {sha}: NOT confirmed: origin has {has}")
         else:
             lines.append(f"- review branch {name} at {sha}: NOT pushed: {said(done)}")
     return lines
