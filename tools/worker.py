@@ -1128,6 +1128,15 @@ def branches_of_other_worktrees(path: Path) -> set[str]:
     return theirs
 
 
+def branch_start(path: Path, name: str, reviewed: str) -> str:
+    """The commit a branch was created at, from its oldest reflog entry: the head the agent
+    detached to and cut the branch from, which is the reviewed head even when the worktree
+    started elsewhere. `reviewed` when the reflog says nothing."""
+    log = git("reflog", "show", "--format=%H", f"refs/heads/{name}", cwd=path)
+    shas = log.stdout.split() if log.returncode == 0 else []
+    return shas[-1] if shas else reviewed
+
+
 def push_review_branches(
     path: Path, before: dict[str, str] | None = None, reviewed: str | None = None
 ) -> list[str]:
@@ -1155,11 +1164,12 @@ def push_review_branches(
             continue
         sha = git("rev-parse", "--short=12", f"refs/heads/{name}", cwd=path).stdout.strip()
         if reviewed:
-            ahead = git("rev-list", "--count", f"{reviewed}..refs/heads/{name}", cwd=path)
+            base = branch_start(path, name, reviewed)
+            ahead = git("rev-list", "--count", f"{base}..refs/heads/{name}", cwd=path)
             if ahead.returncode == 0 and ahead.stdout.strip() == "0":
                 lines.append(
                     f"- review branch {name} at {sha}: not pushed: "
-                    f"review branch has no commits beyond {reviewed[:12]}"
+                    f"review branch has no commits beyond {base[:12]}"
                 )
                 continue
         done = git("push", "--quiet", "origin", f"refs/heads/{name}:refs/heads/{name}", cwd=path)
