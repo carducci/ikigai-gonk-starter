@@ -124,6 +124,17 @@ ctl:worker-one-repository-label a harness:Control ;
     harness:statedBy guide:dispatcher-marks-the-work ;
     harness:firedBy test:test_harness:SensorsFire.test_worker_one_repository_label .
 
+ctl:worker-story-names-one-change a harness:Control ;
+    rdfs:label "worker: a story names one change" ;
+    rdfs:comment "The worker does not take an item labelled `story` unless it carries exactly one `change:<id>` label with a well-formed change id: a story applies one whole OpenSpec change." ;
+    harness:direction harness:feedback ; harness:execution harness:computational ;
+    harness:stage harness:runtime ; harness:category harness:behavior ;
+    harness:outcome harness:refuse ;
+    harness:wiredBy "worker-config" ;
+    harness:enforcedAt "tools/worker.py#skip_reason" ;
+    harness:statedBy guide:dispatcher-marks-the-work ;
+    harness:firedBy test:test_harness:SensorsFire.test_worker_story_names_one_change .
+
 ctl:worker-skips-awaiting-dispatcher a harness:Control ;
     rdfs:label "worker: skips a hand-back awaiting its dispatcher" ;
     rdfs:comment "The worker does not take an item handed back and waiting for its dispatcher to check the evidence." ;

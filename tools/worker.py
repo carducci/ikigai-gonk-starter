@@ -825,6 +825,49 @@ def redispatched_since(item: dict, routers: list[str], at: str | None) -> bool:
     return False
 
 
+# --------------------------------------------------------------------------- stories
+
+# A STORY is one whole OpenSpec change, applied start to finish by one agent session: an item
+# labelled `story` with exactly one `change:<id>` (worker/README.md, "Stories"). The kind is told
+# by the labels the dispatch pinned, never by the loop's configuration.
+STORY_LABEL = "story"
+CHANGE_PREFIX = "change:"
+CHANGE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+def story_changes(item: dict) -> list[str]:
+    return [
+        w[len(CHANGE_PREFIX) :] for w in item.get("labels") or [] if w.startswith(CHANGE_PREFIX)
+    ]
+
+
+def story_problem(item: dict) -> str | None:
+    """Why an item labelled `story` cannot run as one, or None (and None for any other item)."""
+    if STORY_LABEL not in (item.get("labels") or []):
+        return None
+    changes = story_changes(item)
+    if len(changes) != 1:
+        named = ", ".join(f"{CHANGE_PREFIX}{c}" for c in changes) or "none"
+        return f"a story applies exactly one OpenSpec change, and its change: labels are {named}"
+    if not CHANGE_ID.match(changes[0]):
+        return (
+            f"its change id {changes[0]!r} is not a change id (lowercase letters, digits and `-`, "
+            "starting with a letter or digit, at most 64)"
+        )
+    return None
+
+
+def story_change(item: dict) -> str | None:
+    """The change a story applies, or None for an item that is not a story."""
+    if STORY_LABEL not in (item.get("labels") or []) or story_problem(item):
+        return None
+    return story_changes(item)[0]
+
+
+def is_story(item: dict) -> bool:
+    return story_change(item) is not None
+
+
 # --------------------------------------------------------------------------- local state
 
 
@@ -1848,6 +1891,9 @@ class Worker:
         problem = dispatch_problem(item, self.wc.routers, self.wc.labels)
         if problem:
             return gonk.sensor("worker-dispatched-by-a-router"), problem
+        problem = story_problem(item)
+        if problem:
+            return gonk.sensor("worker-story-names-one-change"), problem
         if awaiting_dispatcher(item):
             return gonk.sensor("worker-skips-awaiting-dispatcher"), (
                 "it is awaiting its dispatcher (handed back, awaiting review)"

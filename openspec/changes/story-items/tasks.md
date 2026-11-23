@@ -1,4 +1,4 @@
-- [ ] 1. Tell a story by its labels, and skip one that names no change or several (A story must name one change)
+- [x] 1. Tell a story by its labels, and skip one that names no change or several (A story must name one change)
 - [ ] 2. Read and check the optional `[story]` table
 - [ ] 3. The story workspace on `story/<id>`, resumed from origin (A story resumes its branch)
 - [ ] 4. The story preamble, chosen in `brief()` by kind (A story's brief names the OpenSpec apply workflow)
