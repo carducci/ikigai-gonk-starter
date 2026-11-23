@@ -1,7 +1,7 @@
 - [x] 1. Tell a story by its labels, and skip one that names no change or several (A story must name one change)
 - [x] 2. Read and check the optional `[story]` table
 - [x] 3. The story workspace on `story/<id>`, resumed from origin (A story resumes its branch)
-- [ ] 4. The story preamble, chosen in `brief()` by kind (A story's brief names the OpenSpec apply workflow)
+- [x] 4. The story preamble, chosen in `brief()` by kind (A story's brief names the OpenSpec apply workflow)
 - [ ] 5. Checkpoints, one draft pull request and the stall stop (A story checkpoints its branch)
 - [ ] 6. The checks after the agent, ready only when all pass (Only a passing story is done)
 - [ ] 7. The duration and cost line, with partial usage for a stopped run (A story reports its duration and cost)

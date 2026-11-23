@@ -4,6 +4,7 @@ it, the stub gh, the fake agent (`--tick`, `--hang`), a fake `openspec` on PATH 
 
 from __future__ import annotations
 
+import re
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -142,6 +143,47 @@ class Selection(unittest.TestCase):
         self.assertEqual([i["number"] for i, _ in take], [plain])
         self.assertEqual(skip, [])
         self.assertEqual(w.why_not(self.ledger.items[plain], datetime.now(UTC), {}), None)
+
+
+class TheBrief(unittest.TestCase):
+    def setUp(self):
+        self.s = StoryRig(self)
+
+    def test_a_story_runs_under_the_story_preamble(self):
+        n = self.s.story()
+        self.s.run(story='build = ["just", "gates", "{change}"]\nstall = "20m"')
+        prompt = self.s.rig.prompt(n)
+        for said in (
+            "You are an unattended builder",
+            f"Apply the OpenSpec change `{CHANGE}`",
+            ".claude/skills/openspec-apply-change",
+            f"openspec instructions apply --change {CHANGE}",
+            f"openspec/changes/{CHANGE}/explore.md",
+            "Resume at the first unticked task",
+            f"on the branch story/{CHANGE}",
+            "draft pull request against main",
+            "`just gates add-widget`",
+            "nothing has moved for\n   20m00s",
+            f"openspec/changes/{CHANGE}/evidence/screenshots/",
+            "NEVER mark the pull request ready",
+            "Question for Dax:",
+            "Apply add-widget.",
+        ):
+            self.assertIn(said, prompt)
+        self.assertNotIn("gh pr create", prompt)
+        self.assertEqual(re.findall(r"\{[a-z_]+\}", prompt), [], "every token is filled in")
+
+    def test_without_a_build_it_says_none_is_configured(self):
+        n = self.s.story()
+        self.s.run()
+        self.assertIn("none is configured for the worker", self.s.rig.prompt(n))
+
+    def test_a_plain_item_keeps_the_change_preamble(self):
+        n = self.s.ledger.file("Small", ["worker:w1", "repo:lib"])
+        self.s.run()
+        prompt = self.s.rig.prompt(n)
+        self.assertIn("You are an unattended worker", prompt)
+        self.assertNotIn("OpenSpec change", prompt)
 
 
 class TheBranch(unittest.TestCase):
