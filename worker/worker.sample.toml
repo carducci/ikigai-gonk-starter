@@ -74,6 +74,17 @@ preset = "claude"
 # every = "1h"
 # status_item = 1234      # the item the report is commented on; omit to only log it
 
+# Stories (worker/README.md, "Stories"): an item labelled `story` and one `change:<id>` is a whole
+# OpenSpec change, built on story/<id> and checked by the worker before it is called done. A
+# builder loop selects on "story" with budget = "4h"; a small-items loop sets without = ["story"].
+# Under max_per_repo a story counts only against stories.
+# [story]
+# stall = "30m"           # no new commit and no task ticked for this long stops the agent
+# check = "60s"           # how often HEAD and tasks.md are read, and the branch checkpointed
+# build = ["just", "gates"]   # must print AGENT-BUILD-RESULT {"status": "pass"}; none: no ready
+# ui_globs = []           # changed paths that need a screenshot in evidence
+# evidence = "openspec/changes/{change}/evidence/screenshots"
+
 # Every repository this worker may work in, by the name its items' `repo:<name>` label uses.
 # An item must carry exactly one `repo:` label naming one of these.
 [repos.library]

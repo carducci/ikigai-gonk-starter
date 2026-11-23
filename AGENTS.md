@@ -165,6 +165,14 @@ items the dispatcher marks for them, and work each one in a fresh working tree o
   request, reads its CI, and hands the item back with both as the evidence. The dispatcher
   checks that evidence, then merges and closes, or answers with
   `python3 tools/gonk.py reject 12 --note "<why>"`, and the item is ready again.
+- **A story is one whole change, and only a passing story is done.** An item labelled `story`
+  with exactly one `change:<id>` runs on the branch `story/<id>`, resumed from origin when it
+  exists, and its agent applies that OpenSpec change whole. The worker pushes the branch (never
+  forced) and opens one draft pull request as HEAD or the ticked tasks move, and stops an agent
+  that moves neither for `[story] stall`. After the agent it checks the change validates, every
+  task is ticked, the build passes and UI work has screenshots; only when all pass does it mark
+  the pull request ready and hand the story back with evidence. The hand-back says the run's
+  duration, tokens and the CLI's reported cost (`worker/README.md`, "Stories").
 - **A worker runs as an account of its own.** Never as root, and only in a work root strictly
   under that account's home: not a person's checkouts, not a shared directory.
 - **A worker has a budget, and takes an item once.** An agent that runs past its wall-clock
@@ -182,7 +190,9 @@ items the dispatcher marks for them, and work each one in a fresh working tree o
   takes no NEW item for that agent, and says so, until a reading is under it or its reset time
   has passed; an item already running is not stopped.
 - **One agent per repository.** A worker takes no item whose repository already has a live
-  claim held by anyone, and runs one item per repository on its machine.
+  claim held by anyone, and runs one item per repository on its machine. `max_per_repo` raises
+  that bound, counted within a kind: a review against reviews, a story against stories, any
+  other item against the rest.
 
 ## Optional: a hook for Claude Code
 
