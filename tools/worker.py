@@ -912,6 +912,110 @@ def is_story(item: dict) -> bool:
     return story_change(item) is not None
 
 
+TICKED_TASK = re.compile(r"^\s*[-*] \[[xX]\]", re.MULTILINE)
+OPEN_TASK = re.compile(r"^\s*[-*] \[ \]", re.MULTILINE)
+
+
+def tasks_path(tree: Path, change: str) -> Path:
+    return tree / "openspec" / "changes" / change / "tasks.md"
+
+
+def count_tasks(tasks: Path) -> tuple[int, int] | None:
+    """(ticked, open) task boxes in a change's tasks.md, or None when it cannot be read."""
+    try:
+        text = tasks.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return len(TICKED_TASK.findall(text)), len(OPEN_TASK.findall(text))
+
+
+class StoryWatch:
+    """A story's supervision while its agent runs: every `every` seconds it reads HEAD and the
+    number of ticked tasks. When either has moved it CHECKPOINTS: pushes the branch to origin,
+    never forced (a refused push is logged, and the run goes on), and opens one draft pull
+    request against the base when the branch has none open. `stalled` answers True once neither
+    has moved for `stall` seconds, and `Worker.watch` stops the agent."""
+
+    def __init__(
+        self,
+        ws,
+        change: str,
+        gh,
+        base: str,
+        stall: int,
+        every: int,
+        title: str,
+        body: str,
+        clock=time.monotonic,
+    ):
+        self.ws, self.change, self.gh, self.base = ws, change, gh, base
+        self.stall, self.every, self.clock = stall, every, clock
+        self.title, self.body = title, body
+        self.pr: str | None = None
+        self.pushes = self.refused = 0
+        self.state = self.start = self.read()
+        self.moved_at = self.read_at = clock()
+
+    def read(self) -> tuple[str, int | None]:
+        head = git("rev-parse", "HEAD", cwd=self.ws.path).stdout.strip()
+        counted = count_tasks(tasks_path(self.ws.path, self.change))
+        return head, counted[0] if counted else None
+
+    def stalled(self) -> bool:
+        now = self.clock()
+        if now - self.read_at >= self.every:
+            self.read_at = now
+            state = self.read()
+            if state != self.state:
+                self.state, self.moved_at = state, now
+                self.checkpoint()
+        return now - self.moved_at >= self.stall
+
+    def last_checkpoint(self) -> None:
+        """After the agent, however it ended: push what it left, unless nothing ever moved (a
+        new story's branch would be the base itself, with no pull request to open)."""
+        self.state = self.read()
+        if self.state == self.start and not self.pushes:
+            log(f"story {self.change}: nothing moved, so nothing is pushed")
+            return
+        self.checkpoint()
+
+    def checkpoint(self) -> bool:
+        """Push HEAD to the story's branch, never forced, then make sure a draft pull request is
+        open for it. False when origin refused the push."""
+        branch, (head, ticked) = self.ws.branch, self.state
+        done = git("push", "--quiet", "origin", f"HEAD:refs/heads/{branch}", cwd=self.ws.path)
+        if done.returncode != 0:
+            self.refused += 1
+            log(
+                f"story {self.change}: origin refused the push of {head[:12]} to {branch}, which "
+                f"is never forced: {said(done) or f'exit {done.returncode}'}; going on"
+            )
+            return False
+        self.pushes += 1
+        log(f"story {self.change}: checkpoint {head[:12]}, {ticked} tasks ticked, on {branch}")
+        self.ensure_pr()
+        return True
+
+    def ensure_pr(self) -> None:
+        if self.pr:
+            return
+        prs, err = self.gh.pull_requests(self.ws.branch)
+        if err:
+            log(f"story {self.change}: its pull requests could not be listed: {err}")
+            return
+        open_prs = [pr for pr in prs if pr.state.upper() == "OPEN"]
+        if open_prs:
+            self.pr = open_prs[0].url
+            return
+        done = self.gh.create_draft(self.ws.branch, self.base, self.title, self.body, self.ws.path)
+        if done.returncode != 0:
+            log(f"story {self.change}: the draft pull request was not opened: {said(done)}")
+            return
+        self.pr = (done.stdout.strip().splitlines() or ["(a draft pull request)"])[-1]
+        log(f"story {self.change}: opened the draft pull request {self.pr}")
+
+
 # --------------------------------------------------------------------------- local state
 
 
@@ -1512,6 +1616,19 @@ class GitHub:
             if not r.get("isCrossRepository")  # --head cannot name an owner: a fork's is not ours
         ]
         return sorted(prs, key=lambda p: p.number), None
+
+    def create_draft(
+        self, branch: str, base: str, title: str, body: str, cwd: Path
+    ) -> subprocess.CompletedProcess:
+        """Open a DRAFT pull request of `branch` against `base` (a story's checkpoint)."""
+        return self.run(
+            "pr", "create", "--draft", "-R", self.slug, "--base", base, "--head", branch,
+            "--title", title, "--body", body, cwd=cwd,
+        )  # fmt: skip
+
+    def ready(self, number: int) -> subprocess.CompletedProcess:
+        """Mark a draft pull request ready for review (a story whose checks all passed)."""
+        return self.run("pr", "ready", str(number), "-R", self.slug)
 
     def make_draft(self, pr: PullRequest) -> str:
         """Undo `ready` on a worker PR (ledger item 1143); pr.draft keeps what the agent opened."""
@@ -2285,6 +2402,17 @@ class Worker:
             },
         )
         review_before = review_refs(ws.path)[0] if "review" in self.wc.labels else None
+        story = None
+        if is_story(item):
+            change, table = story_change(item), self.wc.story or load_story({}, "defaults")
+            story = StoryWatch(
+                ws, change, gh, repo.base, table["stall"], table["check"],
+                title=f"{change}: {(item.get('title') or '').strip()}",
+                body=(
+                    f"The story {display}: the OpenSpec change `{change}`, applied by gonk worker "
+                    f"`{holder}`. A draft until the worker's checks pass."
+                ),
+            )  # fmt: skip
         log(f"{display}: running `{argv[0]}` in {ws.path} on {ws.branch} (log {ws.log})")
         started = time.monotonic()
         with ws.log.open("w", encoding="utf-8") as out:
@@ -2305,7 +2433,10 @@ class Worker:
                 raise StepFailed(f"the agent `{argv[0]}` did not start: {e}") from e
             if os.name == "nt":
                 job_for(proc)
-            ended, code = self.watch(proc, started, beat)
+            if story is None:
+                ended, code = self.watch(proc, started, beat)
+            else:
+                ended, code = self.watch(proc, started, beat, story)
             if os.name == "nt":
                 close_job(proc)
         exited = datetime.now(UTC)
@@ -2356,12 +2487,13 @@ class Worker:
 
         if ended == "overrun":
             gonk.fire("worker-budget-overrun", "refusal", self.cfg.repo)
-        if ended in ("overrun", "stopped"):
-            why = (
-                f"its budget of {spoken(self.wc.budget)} ran out"
-                if ended == "overrun"
-                else "the worker was stopped"
-            )
+        if ended in ("overrun", "stopped", "stalled"):
+            why = {
+                "overrun": f"its budget of {spoken(self.wc.budget)} ran out",
+                "stopped": "the worker was stopped",
+                "stalled": "it stalled: no new commit and no task ticked for "
+                + spoken((self.wc.story or load_story({}, "defaults"))["stall"]),
+            }[ended]
             note = "\n".join(
                 [
                     f"gonk worker `{holder}` stopped the agent on {display} after {took}: {why}. "
@@ -2446,8 +2578,15 @@ class Worker:
             HANDED_BACK, f"handed {display} back with {evidence}; claim {state}", prs=prs
         )
 
-    def watch(self, proc: subprocess.Popen, started: float, beat: Heartbeat):
-        """Wait for the agent, stopping it on a lost claim, an overrun or a shutdown."""
+    def watch(
+        self,
+        proc: subprocess.Popen,
+        started: float,
+        beat: Heartbeat,
+        story: StoryWatch | None = None,
+    ):
+        """Wait for the agent, stopping it on a lost claim, an overrun or a shutdown, and a
+        story's agent when it has stalled (StoryWatch, which checkpoints as it reads)."""
         deadline = started + self.wc.budget
         while True:
             try:
@@ -2458,6 +2597,7 @@ class Worker:
                 ("lost", beat.lost.is_set()),
                 ("overrun", time.monotonic() >= deadline),
                 ("stopped", self.shutdown.is_set()),
+                ("stalled", story is not None and story.stalled()),
             ):
                 if why:
                     stop_process(proc, self.wc.grace)

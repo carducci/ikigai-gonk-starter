@@ -4,15 +4,19 @@ it, the stub gh, the fake agent (`--tick`, `--hang`), a fake `openspec` on PATH 
 
 from __future__ import annotations
 
+import contextlib
+import io
 import re
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from support import gonk
 from worker_support import FakeLedger, Rig, git, worker
 
 CHANGE = "add-widget"
+BRANCH = f"story/{CHANGE}"
 
 
 def story_labels(*changes: str) -> list[str]:
@@ -217,6 +221,65 @@ class TheBranch(unittest.TestCase):
         self.assertEqual((self.s.rig.record / f"head-{n}").read_text(), ticked)
         self.assertEqual(self.s.origin_head(f"story/{CHANGE}"), ticked)
         self.assertFalse((self.s.rig.home / "work" / "lib" / f"item-{n}.2").exists())
+
+
+class Supervision(unittest.TestCase):
+    def setUp(self):
+        self.s = StoryRig(self)
+
+    def drafts(self) -> list[dict]:
+        return [pr for pr in self.s.rig.gh().get("prs", []) if pr["headRefName"] == BRANCH]
+
+    def creates(self) -> list[list[str]]:
+        return [c for c in self.s.rig.gh().get("calls", []) if c[:2] == ["pr", "create"]]
+
+    def test_ticks_are_pushed_to_one_draft_pull_request_and_a_stall_stops_it(self):
+        n = self.s.story()
+        outcome = self.s.run(
+            "--no-pr", "--tick", "2", "--tick-every", "1.5", "--hang",
+            story='check = "1s"\nstall = "4s"',
+        )  # fmt: skip
+        self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+        self.assertIn("it stalled: no new commit and no task ticked for 0m04s", outcome.summary)
+        last_tick = git("rev-parse", "HEAD", cwd=self.s.tree(n)).strip()
+        self.assertEqual(self.s.origin_head(BRANCH), last_tick)
+        self.assertEqual(len(self.creates()), 1)
+        (draft,) = self.drafts()
+        self.assertTrue(draft["isDraft"])
+        self.assertEqual(draft["baseRefName"], "main")
+        self.assertIn("--draft", self.creates()[0])
+        self.assertEqual(self.s.rig.gh()["forbidden"], [])
+
+    def test_an_agent_that_changes_nothing_is_stopped_with_nothing_pushed(self):
+        n = self.s.story()
+        outcome = self.s.run("--no-pr", "--hang", story='check = "1s"\nstall = "2s"')
+        self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+        self.assertIn("stalled", outcome.summary)
+        self.assertTrue((self.s.rig.record / f"hanging-{n}").exists())
+        self.assertNotIn(BRANCH, self.s.rig.branches())
+        self.assertEqual(self.creates(), [])
+
+    def test_a_refused_push_is_logged_and_never_forced(self):
+        tree = self.s.rig.tmp / "clone"
+        git("clone", "-q", str(self.s.rig.origin), str(tree))
+        git("checkout", "-q", "-b", BRANCH, cwd=tree)
+        (tree / "mine.txt").write_text("mine\n")
+        git("add", "mine.txt", cwd=tree)
+        git("commit", "-q", "-m", "Mine", cwd=tree)
+        (self.s.seed / "theirs.txt").write_text("theirs\n")
+        git("add", "theirs.txt", cwd=self.s.seed)
+        git("commit", "-q", "-m", "Theirs", cwd=self.s.seed)
+        git("push", "-q", str(self.s.rig.origin), f"HEAD:refs/heads/{BRANCH}", cwd=self.s.seed)
+        theirs = self.s.origin_head(BRANCH)
+        gh = worker.GitHub(self.s.rig.gh_argv, "acme/lib")
+        ws = SimpleNamespace(path=tree, branch=BRANCH)
+        watch = worker.StoryWatch(ws, CHANGE, gh, "main", 60, 1, "t", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertFalse(watch.checkpoint())
+        self.assertIn("refused the push", out.getvalue())
+        self.assertEqual(watch.refused, 1)
+        self.assertEqual(self.s.origin_head(BRANCH), theirs)
+        self.assertNotIn("calls", self.s.rig.gh())
 
 
 if __name__ == "__main__":
