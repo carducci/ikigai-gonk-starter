@@ -223,6 +223,7 @@ class WorkerConfig:
     cert_dir: str | None = None  # overrides .gonk/local.toml's QUIC client bundle (carducci#563)
     max_per_repo: int = 1  # items of one repository at once, on the ledger and on this machine
     idle_holders: tuple = ()  # claim holders that fence no repository (a router's hold)
+    story: dict = field(default_factory=dict)  # the [story] table: see load_story
 
     def __post_init__(self) -> None:
         self.loop_dir = self.loop_dir or self.state_dir
@@ -287,6 +288,48 @@ def load_usage(u, where: str, command: list[str]) -> dict:
         "every": every,
         "status_item": item,
         "agent": agent,
+    }
+
+
+DEFAULT_STORY = {
+    "stall": "30m",
+    "check": "60s",
+    "evidence": "openspec/changes/{change}/evidence/screenshots",
+}
+
+
+def load_story(d, where: str) -> dict:
+    """The [story] table, checked (worker/README.md, "Stories"): stall (no new commit or tick for
+    this long stops the agent), check (how often that is read and checkpointed), build (the
+    repository's build and test command, an argv list; `{change}` is the change's id),
+    ui_globs (paths that make a change UI work, needing a screenshot), evidence (where the
+    screenshots go, inside the repository)."""
+    keys = {"stall", "check", "build", "ui_globs", "evidence"}
+    if not isinstance(d, dict) or set(d) - keys:
+        raise gonk.ConfigError(f"{where}: [story] accepts {', '.join(sorted(keys))} only")
+    build = d.get("build")
+    if isinstance(build, str):
+        build = shlex.split(build)
+    if build is not None:
+        check_argv(build, where, "[story] build")
+    globs = d.get("ui_globs", [])
+    if not isinstance(globs, list) or not all(isinstance(g, str) and g for g in globs):
+        raise gonk.ConfigError(f"{where}: [story] ui_globs is a list of path patterns")
+    evidence = d.get("evidence", DEFAULT_STORY["evidence"])
+    if (
+        not isinstance(evidence, str)
+        or not evidence.strip()
+        or "\0" in evidence
+        or Path(evidence).is_absolute()
+        or ".." in Path(evidence).parts
+    ):
+        raise gonk.ConfigError(f"{where}: [story] evidence is a path inside the repository")
+    return {
+        "stall": seconds(str(d.get("stall", DEFAULT_STORY["stall"])), f"{where}: [story] stall"),
+        "check": seconds(str(d.get("check", DEFAULT_STORY["check"])), f"{where}: [story] check"),
+        "build": build,
+        "ui_globs": globs,
+        "evidence": evidence,
     }
 
 
@@ -467,6 +510,7 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         max_per_repo=max_per_repo,
         idle_holders=tuple(idle),
         usage=load_usage(t.get("usage", {}), where, command),
+        story=load_story(t.get("story", {}), where),
     )
 
 

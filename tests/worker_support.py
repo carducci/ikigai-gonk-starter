@@ -301,8 +301,9 @@ class Rig:
     def gh_argv(self) -> list[str]:
         return [sys.executable, str(FAKES / "gh.py"), "--state", str(self.gh_state)]
 
-    def configure(self, file: str = "worker.toml", **overrides) -> Path:
-        """Write `.gonk/<file>`: worker.toml, or one loop's worker-<agent>.toml."""
+    def configure(self, file: str = "worker.toml", story: str | None = None, **overrides) -> Path:
+        """Write `.gonk/<file>`: worker.toml, or one loop's worker-<agent>.toml. `story` is the
+        body of a [story] table, when given."""
         settings = {
             "labels": '["worker:w1"]',
             "work_root": '"~/work"',
@@ -347,6 +348,8 @@ class Rig:
             f"remote = {json.dumps(str(self.origin))}",
             'github = "acme/other"',
         ]
+        if story is not None:
+            lines += ["", "[story]", story]
         path = self.checkout / ".gonk" / file
         path.write_text("\n".join(lines) + "\n")
         return path

@@ -7,6 +7,7 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime
 
+from support import gonk
 from worker_support import FakeLedger, Rig, worker
 
 CHANGE = "add-widget"
@@ -39,6 +40,46 @@ class TellingAStory(unittest.TestCase):
             item = {"labels": story_labels(*changes)}
             self.assertFalse(worker.is_story(item), changes)
             self.assertIn(said, worker.story_problem(item), changes)
+
+
+class TheStoryTable(unittest.TestCase):
+    def setUp(self):
+        self.rig = Rig(self)
+
+    def load(self, story: str | None):
+        cfg = gonk.load(self.rig.checkout)
+        return worker.load_worker(cfg, self.rig.configure(story=story)).story
+
+    def test_without_one_it_has_the_defaults(self):
+        story = self.load(None)
+        self.assertEqual((story["stall"], story["check"]), (1800, 60))
+        self.assertIsNone(story["build"])
+        self.assertEqual(story["ui_globs"], [])
+        self.assertEqual(story["evidence"], "openspec/changes/{change}/evidence/screenshots")
+
+    def test_its_settings_are_read(self):
+        story = self.load(
+            'stall = "5m"\ncheck = "10s"\nbuild = "just gates"\nui_globs = ["web/**"]\n'
+            'evidence = "docs/shots/{change}"'
+        )
+        self.assertEqual((story["stall"], story["check"]), (300, 10))
+        self.assertEqual(story["build"], ["just", "gates"])
+        self.assertEqual(story["ui_globs"], ["web/**"])
+        self.assertEqual(story["evidence"], "docs/shots/{change}")
+
+    def test_what_it_refuses(self):
+        for bad in (
+            'colour = "red"',
+            "build = []",
+            "build = [1]",
+            'ui_globs = "web/**"',
+            'evidence = "/abs"',
+            'evidence = "../out"',
+            'stall = "soon"',
+            'check = "0s"',
+        ):
+            with self.subTest(bad), self.assertRaises(gonk.ConfigError):
+                self.load(bad)
 
 
 class Selection(unittest.TestCase):
