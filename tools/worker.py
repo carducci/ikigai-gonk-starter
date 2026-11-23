@@ -22,11 +22,11 @@ What it does with one item, in order:
    comment by a router names this worker's labels and the item's repository, and pins the
    title and body it still has), is not awaiting its dispatcher (`awaiting_dispatcher`), was
    not handed back by this worker before, and whose repository has fewer ACTIVE claims than
-   `max_per_repo` (default 1) among items of its own kind (a review counts only reviews,
-   any other item only non-reviews; a claim by one of `idle_holders`, such as a router's hold
-   between rounds, counts for nothing), and fewer than that many items running on this
-   machine. The dispatch is checked again on the item as read after the claim, and the brief
-   is built from that read.
+   `max_per_repo` (default 1) among items of its own kind (a review counts only reviews, a
+   story only stories, any other item only the rest; a claim by one of `idle_holders`, such
+   as a router's hold between rounds, counts for nothing), and fewer than that many items of
+   its kind running on this machine. The dispatch is checked again on the item as read after
+   the claim, and the brief is built from that read.
 2. Claim it with a lease, then renew the lease while it works (the heartbeat). A renewal that
    finds the item held by someone else, released, or closed, or that the ledger refuses, means
    the claim is lost: the agent is stopped and the loss is reported, and nothing is released.
@@ -913,6 +913,16 @@ def is_story(item: dict) -> bool:
     return story_change(item) is not None
 
 
+def claim_kind(item: dict) -> str:
+    """What an item's claim counts against under `max_per_repo`: `review`, `story` or `other`.
+    A review counts only against reviews and a story only against stories, so a builder runs
+    beside the coders of its repository, and a reviewer beside both."""
+    labels = item.get("labels") or []
+    if "review" in labels:
+        return "review"
+    return "story" if STORY_LABEL in labels else "other"
+
+
 TICKED_TASK = re.compile(r"^\s*[-*] \[[xX]\]", re.MULTILINE)
 OPEN_TASK = re.compile(r"^\s*[-*] \[ \]", re.MULTILINE)
 
@@ -1340,11 +1350,14 @@ def _unlock(handle) -> None:
 class RepoLock:
     """Up to `slots` items of one repository on this machine: an exclusive lock on one of
     `slots` files per repository (`<repo>.lock`, then `<repo>.2.lock`, ...), released when the
-    process ends however it ends. One slot is the lock file every earlier worker took."""
+    process ends however it ends. One slot is the lock file every earlier worker took. A `kind`
+    other than `other` (`claim_kind`: review, story) has slots of its own (`<repo>.story.lock`,
+    `<repo>.story.2.lock`, ...), so a story never waits for a coder's slot on this machine."""
 
-    def __init__(self, state_dir: Path, repo: str, slots: int = 1) -> None:
+    def __init__(self, state_dir: Path, repo: str, slots: int = 1, kind: str = "other") -> None:
+        stem = repo if kind == "other" else f"{repo}.{kind}"
         self.paths = [
-            state_dir / "locks" / (f"{repo}.lock" if k == 1 else f"{repo}.{k}.lock")
+            state_dir / "locks" / (f"{stem}.lock" if k == 1 else f"{stem}.{k}.lock")
             for k in range(1, slots + 1)
         ]
         self.path = self.paths[0]
@@ -2408,11 +2421,12 @@ class Worker:
                 f"{sibling[0]} handed it back for its newest dispatch ({sibling[2]}); "
                 f"`worker.py forget {item['number']}` allows it again"
             )
-        if repo not in busy:
-            busy[repo] = self.repo_holder(repo, now, exclude=None)
-        if busy[repo]:
+        kind = self.kind_of(item)
+        if (repo, kind) not in busy:
+            busy[(repo, kind)] = self.repo_holder(repo, now, exclude=None, kind=kind)
+        if busy[(repo, kind)]:
             return gonk.sensor("worker-one-agent-per-repository"), (
-                f"repo:{repo} is busy: {busy[repo]} ({self.per_repo()})"
+                f"repo:{repo} is busy: {busy[(repo, kind)]} ({self.per_repo(kind)})"
             )
         return None
 
@@ -2423,27 +2437,38 @@ class Worker:
         self.skips_fired.add((control, number))
         gonk.fire(control, "refusal", self.cfg.repo)
 
-    def repo_holder(self, repo: str, now: datetime, exclude: int | None) -> str | None:
+    def kind_of(self, item: dict) -> str:
+        """The kind an item of this loop's counts as under `max_per_repo`: a reviewer's items are
+        reviews; any other loop's are stories (labelled `story`) or the rest."""
+        if "review" in self.wc.labels:
+            return "review"
+        return claim_kind(item) if claim_kind(item) == "story" else "other"
+
+    def repo_holder(
+        self, repo: str, now: datetime, exclude: int | None, kind: str | None = None
+    ) -> str | None:
         """Why this repository is full, if it is: `max_per_repo` ACTIVE claims on its open items
-        of this worker's kind (a reviewer counts reviews, any other worker counts the rest)."""
+        of one kind (`claim_kind`: reviews count reviews, stories count stories, any other item
+        the rest). `kind` defaults to this loop's: review for a reviewer, else the rest."""
         items, err = self.ledger.items(f"repo:{repo}")
         if items is None:
             return f"its claims could not be read ({err})"
-        mine = "review" in self.wc.labels
+        kind = kind or ("review" if "review" in self.wc.labels else "other")
         held = []
         for other in items:
-            if other.get("number") == exclude:
-                continue
-            if ("review" in (other.get("labels") or [])) != mine:
+            if other.get("number") == exclude or claim_kind(other) != kind:
                 continue
             holder = active_claim(other, now)
             if holder and holder not in self.wc.idle_holders:
                 held.append(f"{other.get('display')} is claimed by `{holder}`")
         return ", ".join(held) if len(held) >= self.wc.max_per_repo else None
 
-    def per_repo(self) -> str:
+    def per_repo(self, kind: str = "other") -> str:
         n = self.wc.max_per_repo
-        return "one agent per repository" if n == 1 else f"{n} agents per repository"
+        of = {"story": " (counting stories only)", "review": " (counting reviews only)"}
+        return ("one agent per repository" if n == 1 else f"{n} agents per repository") + of.get(
+            kind, ""
+        )
 
     # ----------------------------------------------------------------- one item
 
@@ -2469,11 +2494,13 @@ class Worker:
         for item, sent in self.edited:
             self.hand_back_edited(item, sent)
         for item, repo in take:
-            lock = RepoLock(self.wc.state_dir, repo.name, self.wc.max_per_repo)
+            kind = self.kind_of(item)
+            lock = RepoLock(self.wc.state_dir, repo.name, self.wc.max_per_repo, kind)
             if not lock.acquire():
+                of = "" if kind == "other" else f" {kind}"
                 log(
                     f"skip {item.get('display')}: repo:{repo.name} has "
-                    f"{self.wc.max_per_repo} item(s) running here"
+                    f"{self.wc.max_per_repo}{of} item(s) running here"
                 )
                 self.fire_skip(gonk.sensor("worker-one-agent-per-repository"), item["number"])
                 continue
@@ -2483,11 +2510,13 @@ class Worker:
                 lock.release()
         return Outcome(NOTHING, "nothing to take")
 
-    def vet_claim(self, number: int, display: str | None, repo: Repo) -> dict | Outcome:
+    def vet_claim(
+        self, number: int, display: str | None, repo: Repo, kind: str | None = None
+    ) -> dict | Outcome:
         """The checks after a claim: the item as it is now, or the Outcome of backing off (the
         claim released). A raise is the caller's to turn into a hand-back."""
         holder = self.cfg.holder
-        other = self.repo_holder(repo.name, gonk.iso_now(), exclude=number)
+        other = self.repo_holder(repo.name, gonk.iso_now(), exclude=number, kind=kind)
         if other:
             self.fire_skip(gonk.sensor("worker-one-agent-per-repository"), number)
             self.ledger.release(number, holder)
@@ -2519,7 +2548,7 @@ class Worker:
             return Outcome(NOTHING, f"could not claim {display}: {answer.text()}", number)
         log(f"claimed {display} for `{holder}` on a {self.wc.lease} lease (repo:{repo.name})")
         try:
-            vetted = self.vet_claim(number, display, repo)
+            vetted = self.vet_claim(number, display, repo, self.kind_of(item))
         except Exception as e:  # noqa: BLE001  (a check that raises after the claim hands it back)
             note = (
                 f"gonk worker `{holder}` failed on {display} before starting and hands it "

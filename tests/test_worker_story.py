@@ -441,6 +441,75 @@ class TheChecks(unittest.TestCase):
         self.assertIn("Left a draft: the agent stalled.", said)
 
 
+class CountingAgainstStories(unittest.TestCase):
+    """Under max_per_repo a story counts only against stories (as a review only against
+    reviews), so a builder with max_per_repo 1 runs beside two coders of its repository."""
+
+    def setUp(self):
+        self.s = StoryRig(self)
+
+    def coders_hold_two_items(self) -> None:
+        for name in ("coder-1", "coder-2"):
+            n = self.s.ledger.file(f"Fix for {name}", ["worker:w1", "repo:lib"])
+            self.s.ledger.force_claim(n, name)
+
+    def test_a_builder_takes_a_story_while_two_coders_hold_items_of_its_repository(self):
+        self.coders_hold_two_items()
+        n = self.s.story()
+        outcome = self.s.run("--no-pr", "--tick", "3", story=self.s.build(), max_per_repo="1")
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        self.assertEqual(outcome.number, n)
+
+    def test_a_claimed_story_still_fences_a_second_story(self):
+        first = self.s.story()
+        self.s.ledger.force_claim(first, "builder-2")
+        second = self.s.story()
+        self.s.rig.configure(max_per_repo="1")
+        w = self.s.rig.worker(self.s.ledger)
+        take, skip, _ = w.candidates()
+        self.assertEqual(take, [])
+        why = dict(skip)[f"acme#{second}"]
+        self.assertIn("is claimed by `builder-2`", why)
+        self.assertIn("counting stories only", why)
+
+    def test_a_builders_story_does_not_fence_a_coder(self):
+        story = self.s.story()
+        self.s.ledger.force_claim(story, "builder")
+        fix = self.s.ledger.file("A fix", ["worker:w1", "repo:lib"])
+        self.s.rig.configure(max_per_repo="1", without='["story"]')
+        w = self.s.rig.worker(self.s.ledger)
+        take, _, _ = w.candidates()
+        self.assertEqual([i["number"] for i, _ in take], [fix])
+
+    def test_a_story_has_slots_of_its_own_on_this_machine(self):
+        self.s.rig.configure()
+        state = self.s.rig.worker(self.s.ledger).wc.state_dir
+        coder = worker.RepoLock(state, "lib", 1)
+        builder = worker.RepoLock(state, "lib", 1, "story")
+        second = worker.RepoLock(state, "lib", 1, "story")
+        self.addCleanup(coder.release)
+        self.addCleanup(builder.release)
+        self.assertTrue(coder.acquire())
+        self.assertTrue(builder.acquire())
+        self.assertFalse(second.acquire())
+        self.assertEqual(builder.path.name, "lib.story.lock")
+        self.assertEqual(coder.path.name, "lib.lock")
+
+    def test_a_coder_running_here_does_not_hold_the_builder_back(self):
+        self.s.rig.configure()
+        held = worker.RepoLock(self.s.rig.worker(self.s.ledger).wc.state_dir, "lib")
+        self.assertTrue(held.acquire())
+        self.addCleanup(held.release)
+        self.s.story()
+        outcome = self.s.run("--no-pr", "--tick", "3", story=self.s.build())
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+
+    def test_claim_kind(self):
+        self.assertEqual(worker.claim_kind({"labels": ["repo:lib", "review"]}), "review")
+        self.assertEqual(worker.claim_kind({"labels": story_labels(CHANGE)}), "story")
+        self.assertEqual(worker.claim_kind({"labels": ["repo:lib"]}), "other")
+
+
 SESSIONS = Path(__file__).resolve().parent / "fixtures" / "sessions"
 
 

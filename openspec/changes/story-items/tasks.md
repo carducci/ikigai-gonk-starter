@@ -6,4 +6,4 @@
 - [x] 6. The checks after the agent, ready only when all pass (Only a passing story is done)
 - [x] 7. The duration and cost line, with partial usage for a stopped run (A story reports its duration and cost)
 - [ ] 8. worker/README.md, the workers profile's rules and harness
-- [ ] 9. Count a story's claims only against other stories (A story counts only against stories)
+- [x] 9. Count a story's claims only against other stories (A story counts only against stories)
