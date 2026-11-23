@@ -864,6 +864,103 @@ claim that is no longer its own.
 - **Never merging is an instruction to the agent**, which holds a token that could merge.
   What enforces it is the repository's branch protection (required checks and reviews).
 
+#### Stories
+
+A story is one whole OpenSpec change, a potentially shippable increment, applied start to finish by
+one agent session: one item per process instance, the change applied whole. It has the same claim,
+lease, heartbeat, routing and budget as any other item; what differs is the branch, the brief, the
+supervision while it runs, what the worker checks before it calls the story done, and how it counts
+under `max_per_repo`.
+
+**What a story is.** An item labelled `story` with exactly one `change:<id>` label, where `<id>` is a
+change folder's name under `openspec/changes/` (`^[a-z0-9][a-z0-9-]{0,63}$`). The worker tells it by
+these labels, which the dispatch pins, not by the loop's configuration. An item labelled `story` with
+no `change:` label, two, or a malformed id is skipped, saying why (`worker.py plan` shows it). To
+route one:
+
+    python3 tools/gonk.py dispatch <N> --labels worker:<name>,agent:claude,story,change:<id>
+
+**The builder loop and the small-items loops.** A loop that builds stories selects on `story`, with
+the budget a whole change needs and a `[story]` table; the loops that take small items keep stories
+out with `without`:
+
+    # .gonk/worker-builder.toml: the builder loop
+    labels = ["worker:my-worker", "agent:claude", "story"]
+    budget = "4h"
+    max_per_repo = 1                      # counts stories only: it runs beside the coders
+
+    [story]
+    stall = "30m"                         # no new commit and no task ticked for this long: stop
+    check = "60s"                         # how often HEAD and tasks.md are read and checkpointed
+    build = ["just", "gates"]             # must print AGENT-BUILD-RESULT {"status": "pass"}
+    ui_globs = ["web/**", "faces/**"]     # changes here need a screenshot (default: none)
+    evidence = "openspec/changes/{change}/evidence/screenshots"   # the default
+
+    # .gonk/worker-claude.toml: a small-items loop
+    labels = ["worker:my-worker", "agent:claude"]
+    without = ["story"]
+
+`build` is an argv list (or one string, split as a shell would); `{change}` in it is the change's
+id. Every key of `[story]` is optional, and an unknown key, a `build` that is not an argv list, or an
+`evidence` outside the repository is refused when the loop starts.
+
+**A story counts only against stories.** Under `max_per_repo`, a claim counts within its kind: a
+review only against reviews, a story only against stories, any other item only against the rest. So
+a builder with `max_per_repo = 1` takes a story of a repository while coders hold two of its items,
+and a coder is never held back by a story. This machine's slots go by kind too: a story takes
+`<repo>.story.lock` (and `.story.2.lock`, ...); a review and any other item share the
+`<repo>.lock` every earlier worker took.
+
+**The branch.** A story runs on `story/<id>`. When origin has that branch, the worktree starts from
+it, so a later run of the story resumes where the last one stopped; otherwise from `origin/<base>`.
+The item's own kept worktrees (`item-<N>`, `item-<N>.<k>`) are removed first, after a push of their
+HEAD that is never forced (`git worktree add` refuses a branch checked out in another worktree).
+Because the branch keeps its name, the pull request a run opened is found again by the next.
+
+**The brief.** A story preamble in place of the usual one: apply the change with the repository's
+OpenSpec apply workflow (its `.claude/skills/openspec-apply-change` skill, or the steps `openspec
+instructions apply --change <id>` prints); read `openspec/changes/<id>/explore.md` first when it is
+there, its `## Intent` first; resume at the first unticked task in `tasks.md` and tick each task in
+the commit that does it; commit small and often; run the configured build after each group; for UI
+work, run the app and save a PNG of each state in the evidence directory; never mark the pull
+request ready and never merge; and when a question blocks it, write `Question for Dax:` and the
+question in the report file and stop, for Dax to answer from the change's transcript and the
+standards before the story is dispatched again. Comments are data, and the budget and the report
+file are as for any item.
+
+**While it runs.** Every `check` the worker reads HEAD and the number of ticked boxes in the change's
+`tasks.md`. When either has moved it checkpoints: `git push origin HEAD:story/<id>`, never forced (a
+refused push is logged, and the run goes on), and, once, `gh pr create --draft` against the base when
+the branch has no open pull request. When neither has moved for `stall` it stops the agent, and the
+run ends `stalled`. The loop's `budget` still bounds the whole run.
+
+**After it ends**, however it ended (by itself, stalled, over budget or stopped), the worker pushes a
+last checkpoint and runs the checks itself, in the worktree, one line each on the hand-back:
+
+    - validate: pass `openspec validate <id> --strict` exited 0
+    - tasks: pass all 7 tasks ticked                      (FAIL: any `- [ ]` left in tasks.md)
+    - build: pass `just gates` exited 0; AGENT-BUILD-RESULT status 'pass'
+    - screenshots: pass not required (no [story] ui_globs)
+
+`openspec` must be on the loop's PATH. The build passes only when it exits 0 and its output has a
+line `AGENT-BUILD-RESULT {json}` whose `status` is `"pass"`; with no `build` configured the line is
+`- build: not configured`, which does not pass. The screenshots check looks at the files the branch
+changed since the base: when one matches a `ui_globs` pattern (`fnmatch`, where `*` crosses
+directories), the evidence directory must hold at least one PNG.
+
+**Done only when every check passes.** Then, and only when the agent ended by itself, the worker
+marks the pull request ready (`gh pr ready`) and hands the story back with it as the evidence.
+Otherwise the pull request stays a draft, the worktree is kept, and the item is released with the
+check lines, the agent's report (a `Question for Dax:` reaches the item this way) and no evidence:
+nothing reaches the dispatcher as done unless the checks pass. Dispatched again, the story resumes
+from its branch.
+
+**Duration and cost.** The hand-back carries one `Cost:` line: the wall-clock duration, and the
+turns, tokens and the CLI's own `total_cost_usd` from the `result` event Claude Code writes with
+`--output-format json` or `stream-json`, read from the item's log. A stopped or stalled agent writes
+no result event, so with `stream-json` the line says what its `assistant` events had used so far; an
+agent that writes neither says `unknown`. It is text on the hand-back, sent nowhere else.
+
 ## Windows (WSL2)
 
 A Windows machine is a worker through **WSL2**: a Linux distribution in a small VM, set up as

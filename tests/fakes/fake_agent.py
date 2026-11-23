@@ -7,10 +7,13 @@ branch and "open a pull request" through the stub gh, or report evidence without
                   [--sleep S] [--child] [--deaf-child] [--stubborn] [--no-pr] [--draft-base B]
                   [--evidence URL --report-file P] [--report TEXT] [--note TEXT]
                   [--report-hex HEX] [--confined] [--say TEXT] [--chatter TEXT] [--exit N]
-                  -- <prompt>
+                  [--change ID --tick N [--tick-every S]] [--hang] [--emit FILE] -- <prompt>
 
 With --confined it writes only inside its worktree, as Claude Code lets an agent: a report
-file outside it is not written (carducci#335).
+file outside it is not written (carducci#335). `--tick N` is a story's builder: it ticks the
+first N open boxes of the change's tasks.md, one commit per tick, `--tick-every` seconds apart;
+`--hang` then sleeps without changing anything, as a stuck agent does, until the worker stops
+it. `--emit` prints FILE to stdout first, as a harness prints its stream-json events.
 """
 
 from __future__ import annotations
@@ -59,8 +62,17 @@ def main() -> int:
     p.add_argument("--json-result", action="store_true", help="as --output-format json")
     p.add_argument("--refused", action="append", default=[], help="a refused command")
     p.add_argument("--exit", type=int, default=0)
+    p.add_argument("--change", help="a story's change id, for --tick")
+    p.add_argument("--tick", type=int, default=0, help="tick and commit this many tasks")
+    p.add_argument("--tick-every", type=float, default=0, help="seconds before each tick")
+    p.add_argument("--hang", action="store_true", help="then sleep, changing nothing")
+    p.add_argument("--emit", help="print this file to stdout first (stream-json events)")
     p.add_argument("prompt")
     args = p.parse_args()
+
+    if args.emit:
+        sys.stdout.write(Path(args.emit).read_text())
+        sys.stdout.flush()
 
     record = Path(args.record)
     record.mkdir(parents=True, exist_ok=True)
@@ -99,6 +111,17 @@ def main() -> int:
         report.write_bytes(bytes.fromhex(args.report_hex))
     status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
     (record / f"status-{args.item}").write_text(status.stdout)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+    (record / f"head-{args.item}").write_text(head.stdout.strip())
+    for _ in range(args.tick):
+        time.sleep(args.tick_every)
+        tasks = Path("openspec") / "changes" / args.change / "tasks.md"
+        tasks.write_text(tasks.read_text().replace("- [ ]", "- [x]", 1))
+        git("add", str(tasks))
+        git("commit", "-q", "-m", f"Tick a task of {args.change}")
+    if args.hang:
+        (record / f"hanging-{args.item}").write_text(str(time.time()))
+        time.sleep(3600)
     if not args.no_pr:
         Path("WORKED.txt").write_text(f"item {args.item}\n")
         git("add", "WORKED.txt")

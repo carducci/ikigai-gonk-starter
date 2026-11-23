@@ -592,6 +592,13 @@ class SensorsFire(unittest.TestCase):
         assert_fired(self, rig.checkout, "worker-one-repository-label")
         self.assertEqual(fired(rig.checkout), ["worker-one-repository-label"] * 2)
 
+    def test_worker_story_names_one_change(self):
+        rig, ledger = self.worker_rig(), FakeLedger()
+        ledger.file("Two changes", ["worker:w1", "repo:lib", "story", "change:a", "change:b"])
+        _, outcome = self.run_once(rig, ledger)
+        self.assertEqual(outcome.code, worker.NOTHING)
+        assert_fired(self, rig.checkout, "worker-story-names-one-change")
+
     def test_worker_skips_awaiting_dispatcher(self):
         rig, ledger = self.worker_rig(), FakeLedger(older_comment=True)
         n = ledger.file("Handed back", ["worker:w1", "repo:lib"])

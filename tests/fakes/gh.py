@@ -8,6 +8,7 @@
     gh.py --state <file.json> pr checks <n> -R <slug> --json …
     gh.py --state <file.json> run list -R <slug> --commit <sha> --json …
     gh.py --state <file.json> pr ready <n> -R <slug> --undo
+    gh.py --state <file.json> pr ready <n> -R <slug>          (a story whose checks passed)
 
 The state file holds the pull requests, how `pr checks` answers (`"checks": "refused"` is a
 fine-grained token, which GitHub offers no Checks permission for; `"ok"` answers), the runs
@@ -95,6 +96,13 @@ def main() -> int:
             )
         else:
             out = json.dumps([{"name": "gates", "bucket": "pass"}])
+    elif argv[:2] == ["pr", "ready"] and "--undo" not in argv:
+        found = [pr for pr in state["prs"] if str(pr["number"]) == argv[2]]
+        if not found:
+            code, err = 1, "GraphQL: Could not resolve to a PullRequest\n"
+        else:
+            found[0]["isDraft"] = False
+            out = f"Pull request {found[0]['url']} is marked as ready for review\n"
     elif argv[:2] == ["pr", "ready"] and "--undo" in argv:
         found = [pr for pr in state["prs"] if str(pr["number"]) == argv[2]]
         if state.get("ready") == "refused" or not found:
