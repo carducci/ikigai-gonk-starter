@@ -908,7 +908,7 @@ id. Every key of `[story]` is optional, and an unknown key, a `build` that is no
 review only against reviews, a story only against stories, any other item only against the rest. So
 a builder with `max_per_repo = 1` takes a story of a repository while coders hold two of its items,
 and a coder is never held back by a story. This machine's slots go by kind too: a story takes
-`<repo>.story.lock` (and `.story.2.lock`, ...), a review `<repo>.review.lock`, any other item the
+`<repo>.story.lock` (and `.story.2.lock`, ...); a review and any other item share the
 `<repo>.lock` every earlier worker took.
 
 **The branch.** A story runs on `story/<id>`. When origin has that branch, the worktree starts from
