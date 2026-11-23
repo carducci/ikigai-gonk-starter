@@ -441,5 +441,58 @@ class TheChecks(unittest.TestCase):
         self.assertIn("Left a draft: the agent stalled.", said)
 
 
+SESSIONS = Path(__file__).resolve().parent / "fixtures" / "sessions"
+
+
+class TheCost(unittest.TestCase):
+    def setUp(self):
+        self.s = StoryRig(self)
+
+    def cost(self, number: int) -> str:
+        said = "\n".join(c["text"] for c in self.s.ledger.human_comments(number))
+        (line,) = [x for x in said.splitlines() if x.startswith("Cost: ")]
+        return line
+
+    def test_the_hand_back_names_duration_turns_tokens_and_the_clis_cost(self):
+        n = self.s.story()
+        emit = str(SESSIONS / "claude-stream.jsonl")
+        outcome = self.s.run("--no-pr", "--tick", "3", "--emit", emit, story=self.s.build())
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        line = self.cost(n)
+        self.assertRegex(line, r"^Cost: duration \d+m\d\ds; turns 3; ")
+        self.assertIn(
+            "tokens 12000 (input 300, cached input 9000, cache creation 2000, output 700)", line
+        )
+        self.assertIn("total_cost_usd 0.50 (the CLI's own figure)", line)
+
+    def test_a_stalled_run_reports_the_usage_it_had_so_far(self):
+        n = self.s.story()
+        emit = str(SESSIONS / "claude-stream-stopped.jsonl")
+        outcome = self.s.run(
+            "--no-pr", "--emit", emit, "--hang", story='check = "1s"\nstall = "2s"'
+        )
+        self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+        line = self.cost(n)
+        self.assertIn("turns 2", line)
+        self.assertIn(
+            "tokens 10110 (input 30, cached input 9000, cache creation 1000, output 80)", line
+        )
+        self.assertIn("so far: the agent was stopped", line)
+        self.assertIn("total_cost_usd not reported", line)
+
+    def test_an_agent_that_writes_no_json_still_says_its_duration(self):
+        n = self.s.story()
+        self.s.run("--no-pr", "--tick", "3", story=self.s.build())
+        line = self.cost(n)
+        self.assertRegex(line, r"^Cost: duration \d+m\d\ds; turns unknown; tokens unknown; ")
+        self.assertIn("total_cost_usd not reported", line)
+
+    def test_a_plain_items_hand_back_has_no_cost_line(self):
+        n = self.s.ledger.file("Small", ["worker:w1", "repo:lib"])
+        self.s.run("--emit", str(SESSIONS / "claude-stream.jsonl"))
+        said = "\n".join(c["text"] for c in self.s.ledger.human_comments(n))
+        self.assertNotIn("Cost:", said)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1064,6 +1064,91 @@ def last_line(text: str) -> str:
     return lines[-1][:200] if lines else ""
 
 
+def count(value) -> int | None:
+    """A whole number of 0 or more, or None: a bool or a float is not a count."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def log_usage(text: str) -> dict | None:
+    """What a story's agent used, read straight from its log: Claude Code's `result` event
+    (`--output-format json` or `stream-json`) when it wrote one, with its `total_cost_usd`; else,
+    for an agent stopped before its result, the per-message usage of a stream-json log's
+    `assistant` events, summed once per message id (`partial`). None when the log has neither."""
+    result, messages = None, {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "result":
+            result = event
+        elif event.get("type") == "assistant":
+            message = event.get("message") if isinstance(event.get("message"), dict) else {}
+            if isinstance(message.get("usage"), dict):
+                key = message.get("id") or f"message-{len(messages)}"
+                messages[str(key)] = message["usage"]
+    if result is not None:
+        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        turns, partial = count(result.get("num_turns")), False
+        cost = result.get("total_cost_usd")
+        cost = (
+            float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+        )
+    elif messages:
+        usage, partial, cost = {}, True, None
+        for each in messages.values():
+            for key, n in each.items():
+                if count(n) is not None:
+                    usage[key] = usage.get(key, 0) + n
+        turns = len(messages)
+    else:
+        return None
+    return {
+        "turns": turns,
+        "input": count(usage.get("input_tokens")),
+        "cached": count(usage.get("cache_read_input_tokens")),
+        "creation": count(usage.get("cache_creation_input_tokens")),
+        "output": count(usage.get("output_tokens")),
+        "partial": partial,
+        "cost": cost if cost is None or cost >= 0 else None,
+    }
+
+
+def cost_line(usage: dict | None, took: str) -> str:
+    """A story's `Cost:` line: the wall-clock duration, the turns and tokens its log carried
+    (so far, for an agent stopped before its result), and the CLI's own `total_cost_usd`."""
+    parts = [f"duration {took}"]
+    if usage is None:
+        parts += ["turns unknown", "tokens unknown"]
+    else:
+        turns = usage.get("turns")
+        parts.append(f"turns {turns if turns is not None else 'unknown'}")
+        named = [
+            ("input", "input"),
+            ("cached", "cached input"),
+            ("creation", "cache creation"),
+            ("output", "output"),
+        ]
+        known = [(word, usage[key]) for key, word in named if usage.get(key) is not None]
+        detail = ", ".join(f"{word} {n}" for word, n in known)
+        total = sum(n for _, n in known)
+        parts.append(f"tokens {total} ({detail})" if known else "tokens unknown")
+        if usage.get("partial"):
+            parts.append("so far: the agent was stopped before its harness reported the session")
+    cost = (usage or {}).get("cost")
+    parts.append(
+        f"total_cost_usd {cost:.2f} (the CLI's own figure)"
+        if cost is not None
+        else "total_cost_usd not reported"
+    )
+    return "Cost: " + "; ".join(parts) + "."
+
+
 def story_checks(ws, change: str, base: str, table: dict) -> list[Check]:
     """A story's checks, run by the worker in its worktree after the agent (worker/README.md,
     "Stories"): the change validates, every task is ticked, the build passes, and UI work has
@@ -2559,12 +2644,19 @@ class Worker:
             if os.name == "nt":
                 close_job(proc)
         exited = datetime.now(UTC)
+        # A story's usage is read before read_agent_log puts the final text in the result's place.
+        usage = None
+        if story is not None:
+            usage = log_usage(ws.log.read_text(encoding="utf-8", errors="replace"))
         refused = read_agent_log(ws.log)
         took = spoken(time.monotonic() - started)
         where = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
         if story is not None:
             ran = f"`{argv[0]}` exited {code} after {took}"
-            return self.finish_story(item, repo, ws, story, gh, beat, ended, ran, where, refused)
+            cost = cost_line(usage, took)
+            return self.finish_story(
+                item, repo, ws, story, gh, beat, ended, ran, where, refused, cost
+            )
 
         if ended == "lost":
             # Not ours any more: say so on the item, release NOTHING (it is someone else's,
