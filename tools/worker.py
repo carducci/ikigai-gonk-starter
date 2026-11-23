@@ -700,6 +700,8 @@ def dispatch_problem(item: dict, routers: list[str], labels: list[str]) -> str |
     one of `routers`: it must name every label this worker selects on and the item's `repo:`
     label, and its digest must match the title and body the item has now. A label added after
     that dispatch, a dispatch from anyone else, or an edit since, does not route the item here.
+    The `story` and `change:<id>` labels the item carries must be named too: the dispatch pins
+    the change a story applies, so a swapped `change:` label routes nothing.
     """
     dispatches = [
         c
@@ -714,7 +716,8 @@ def dispatch_problem(item: dict, routers: list[str], labels: list[str]) -> str |
     newest = max(dispatches, key=lambda c: instant(c.get("time")) or EPOCH)
     named, digest = gonk.parse_dispatch(newest.get("text") or "")
     by = f"{newest.get('author')} at {newest.get('time')}"
-    need = list(dict.fromkeys([*labels, *(f"repo:{r}" for r in repo_labels(item))]))
+    pinned = [w for w in item.get("labels") or [] if w == "story" or w.startswith("change:")]
+    need = list(dict.fromkeys([*labels, *(f"repo:{r}" for r in repo_labels(item)), *pinned]))
     missing = [w for w in need if w not in named]
     if missing:
         return (
@@ -1242,15 +1245,15 @@ def story_checks(ws, change: str, base: str, table: dict) -> list[Check]:
     if not globs:
         checks.append(Check("screenshots", "pass", "not required (no [story] ui_globs)"))
         return checks
-    diff = git("diff", "--name-only", f"origin/{base}...HEAD", cwd=ws.path)
+    diff = git("diff", "--name-only", "-z", f"origin/{base}...HEAD", cwd=ws.path)
     if diff.returncode != 0:
         checks.append(Check("screenshots", "FAIL", "the changed files could not be read"))
         return checks
-    ui = [p for p in diff.stdout.split("\n") if p and any(fnmatch.fnmatchcase(p, g) for g in globs)]
-    held = git("ls-tree", "-r", "--name-only", "HEAD", "--", evidence, cwd=ws.path)
+    ui = [p for p in diff.stdout.split("\0") if p and any(fnmatch.fnmatchcase(p, g) for g in globs)]
+    held = git("ls-tree", "-r", "--name-only", "-z", "HEAD", "--", evidence, cwd=ws.path)
     # A screenshot counts when HEAD holds it and the tree still has it (not deleted unseen).
     pngs = [
-        p for p in held.stdout.split("\n") if p.lower().endswith(".png") and (ws.path / p).is_file()
+        p for p in held.stdout.split("\0") if p.lower().endswith(".png") and (ws.path / p).is_file()
     ]
     if not ui:
         checks.append(Check("screenshots", "pass", "no UI path changed"))
@@ -1715,7 +1718,12 @@ def drop_own_trees(home: Path, number: int) -> None:
         if not (tree / ".git").is_file():
             continue
         branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=tree).stdout.strip()
-        if branch.startswith("story/"):
+        if branch == "HEAD":  # detached: keep the tree unless a ref already holds its commit
+            head = git("rev-parse", "HEAD", cwd=tree).stdout.strip()
+            if not git("for-each-ref", "--contains", head, cwd=home / ".source").stdout.strip():
+                log(f"story: {tree} is detached at a commit on no ref; the tree is kept")
+                continue
+        else:
             pushed = git(
                 "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}",
                 cwd=tree, timeout=PUSH_TIMEOUT,
