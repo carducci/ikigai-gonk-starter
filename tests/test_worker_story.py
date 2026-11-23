@@ -6,14 +6,19 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
+import os
 import re
+import shlex
+import sys
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from support import gonk
-from worker_support import FakeLedger, Rig, git, worker
+from worker_support import FAKES, FakeLedger, Rig, git, worker
 
 CHANGE = "add-widget"
 BRANCH = f"story/{CHANGE}"
@@ -40,6 +45,25 @@ class StoryRig:
         git("add", "openspec", cwd=self.seed)
         git("commit", "-q", "-m", "Propose add-widget", cwd=self.seed)
         git("push", "-q", str(self.rig.origin), "main", cwd=self.seed)
+        # The fake openspec, as `openspec` on PATH for the worker's checks.
+        bin_dir = self.rig.tmp / "bin"
+        bin_dir.mkdir()
+        wrapper = bin_dir / "openspec"
+        wrapper.write_text(
+            f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
+            f'{shlex.quote(str(FAKES / "openspec.py"))} "$@"\n'
+        )
+        wrapper.chmod(0o755)
+        path = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        patcher = mock.patch.dict(os.environ, {"PATH": path})
+        patcher.start()
+        test.addCleanup(patcher.stop)
+
+    @staticmethod
+    def build(status: str = "pass", code: int = 0) -> str:
+        """A `[story] build` line running the fake build."""
+        argv = [sys.executable, str(FAKES / "fake_build.py"), "--status", status]
+        return f"build = {json.dumps([*argv, '--exit', str(code)])}"
 
     def story(self, body: str = "Apply add-widget.") -> int:
         return self.ledger.file("Build the widget", story_labels(CHANGE), body=body)
@@ -280,6 +304,141 @@ class Supervision(unittest.TestCase):
         self.assertEqual(watch.refused, 1)
         self.assertEqual(self.s.origin_head(BRANCH), theirs)
         self.assertNotIn("calls", self.s.rig.gh())
+
+
+class TheChecks(unittest.TestCase):
+    def setUp(self):
+        self.s = StoryRig(self)
+
+    def draft(self) -> dict:
+        (pr,) = [pr for pr in self.s.rig.gh().get("prs", []) if pr["headRefName"] == BRANCH]
+        return pr
+
+    def said(self, number: int) -> str:
+        return "\n".join(c["text"] for c in self.s.ledger.human_comments(number))
+
+    def test_every_check_passes_so_the_pull_request_is_ready_and_handed_back(self):
+        n = self.s.story()
+        outcome = self.s.run("--no-pr", "--tick", "3", story=self.s.build("pass"))
+        self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+        pr = self.draft()
+        self.assertFalse(pr["isDraft"])
+        said = self.said(n)
+        self.assertTrue(said.startswith(f"Evidence: {pr['url']}\n"), said)
+        for line in (
+            f"- validate: pass `openspec validate {CHANGE} --strict` exited 0",
+            "- tasks: pass all 3 tasks ticked",
+            "- build: pass",
+            "- screenshots: pass not required (no [story] ui_globs)",
+            "Every check passed: it marked",
+        ):
+            self.assertIn(line, said)
+        item = self.s.ledger.items[n]
+        self.assertEqual(item["awaiting"], "dispatcher")
+        self.assertIsNone(item["claim"])
+        self.assertEqual(self.s.ledger.closes, [])
+        self.assertEqual(self.s.rig.gh()["forbidden"], [])
+        self.assertFalse(self.s.tree(n).exists())
+
+    def assert_stays_a_draft(self, number: int, outcome, *lines: str) -> str:
+        self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+        self.assertTrue(self.draft()["isDraft"])
+        said = self.said(number)
+        self.assertNotIn("Evidence:", said)
+        self.assertIn("The pull request stays a draft", said)
+        for line in lines:
+            self.assertIn(line, said)
+        item = self.s.ledger.items[number]
+        self.assertIsNone(item["awaiting"])
+        self.assertIsNone(item["claim"])
+        calls = [c[:2] for c in self.s.rig.gh()["calls"] if "--undo" not in c]
+        self.assertNotIn(["pr", "ready"], calls)
+        self.assertTrue(self.s.tree(number).exists())
+        return said
+
+    def test_a_failing_build_keeps_the_draft(self):
+        n = self.s.story()
+        outcome = self.s.run("--no-pr", "--tick", "3", story=self.s.build("fail"))
+        self.assert_stays_a_draft(
+            n, outcome, "- build: FAIL", "AGENT-BUILD-RESULT status 'fail'", "- tasks: pass"
+        )
+
+    def test_a_build_that_exits_non_zero_or_says_nothing_fails(self):
+        for build, said in (
+            (self.s.build("pass", 2), "exited 2"),
+            (self.s.build("none"), "printed no AGENT-BUILD-RESULT line"),
+            (self.s.build("garbled"), "is not JSON"),
+        ):
+            with self.subTest(said):
+                s = StoryRig(self)
+                n = s.story()
+                outcome = s.run("--no-pr", "--tick", "3", story=build)
+                self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+                text = "\n".join(c["text"] for c in s.ledger.human_comments(n))
+                self.assertIn("- build: FAIL", text)
+                self.assertIn(said, text)
+
+    def test_unticked_tasks_keep_the_draft(self):
+        n = self.s.story()
+        outcome = self.s.run("--no-pr", "--tick", "1", story=self.s.build("pass"))
+        self.assert_stays_a_draft(n, outcome, "- tasks: FAIL 2 of 3 tasks unticked")
+
+    def test_a_change_that_does_not_validate_keeps_the_draft(self):
+        n = self.s.story()
+        with mock.patch.dict(os.environ, {"FAKE_OPENSPEC": "fail"}):
+            outcome = self.s.run("--no-pr", "--tick", "3", story=self.s.build("pass"))
+        self.assert_stays_a_draft(n, outcome, "- validate: FAIL", "missing or invalid")
+
+    def test_no_build_configured_is_said_and_does_not_pass(self):
+        n = self.s.story()
+        outcome = self.s.run("--no-pr", "--tick", "3")
+        self.assert_stays_a_draft(n, outcome, "- build: not configured")
+
+    def test_a_question_for_dax_reaches_the_item(self):
+        n = self.s.story()
+        question = "Question for Dax: should the widget be blue?"
+        outcome = self.s.run("--no-pr", "--tick", "1", "--report", question)
+        self.assert_stays_a_draft(n, outcome, "The agent's report:", question)
+
+    def test_ui_work_without_a_screenshot_keeps_the_draft(self):
+        n = self.s.story()
+        # The fake agent's own commit (WORKED.txt) is the UI path here.
+        outcome = self.s.run(
+            "--tick", "3", story=self.s.build("pass") + '\nui_globs = ["WORKED.*"]'
+        )
+        self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+        said = self.said(n)
+        self.assertIn("- screenshots: FAIL UI paths changed (WORKED.txt)", said)
+        self.assertIn(f"openspec/changes/{CHANGE}/evidence/screenshots has no PNG", said)
+
+    def test_ui_work_with_a_screenshot_passes(self):
+        tree = self.s.rig.tmp / "clone"
+        git("clone", "-q", str(self.s.rig.origin), str(tree))
+        shots = tree / "openspec" / "changes" / CHANGE / "evidence" / "screenshots"
+        shots.mkdir(parents=True)
+        (shots / "empty.png").write_bytes(b"\x89PNG\r\n")
+        (tree / "web").mkdir()
+        (tree / "web" / "page.html").write_text("<p>widget</p>\n")
+        git("add", ".", cwd=tree)
+        git("commit", "-q", "-m", "A page", cwd=tree)
+        table = worker.load_story({"ui_globs": ["web/*"]}, "test")
+        ws = SimpleNamespace(path=tree, branch=BRANCH)
+        checks = {c.name: c for c in worker.story_checks(ws, CHANGE, "main", table)}
+        where = shots.relative_to(tree).as_posix()
+        self.assertEqual(checks["screenshots"].line, f"- screenshots: pass 1 PNG in {where}")
+        (shots / "empty.png").unlink()
+        checks = {c.name: c for c in worker.story_checks(ws, CHANGE, "main", table)}
+        self.assertIn("UI paths changed (web/page.html)", checks["screenshots"].line)
+
+    def test_a_stalled_story_keeps_its_draft_and_says_why(self):
+        n = self.s.story()
+        outcome = self.s.run(
+            "--no-pr", "--tick", "3", "--hang",
+            story=self.s.build("pass") + '\ncheck = "1s"\nstall = "2s"',
+        )  # fmt: skip
+        said = self.assert_stays_a_draft(n, outcome, "- tasks: pass", "- build: pass")
+        self.assertIn("it stalled: no new commit and no task ticked for 0m02s", said)
+        self.assertIn("Left a draft: the agent stalled.", said)
 
 
 if __name__ == "__main__":

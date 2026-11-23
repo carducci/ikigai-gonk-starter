@@ -3,7 +3,7 @@
 - [x] 3. The story workspace on `story/<id>`, resumed from origin (A story resumes its branch)
 - [x] 4. The story preamble, chosen in `brief()` by kind (A story's brief names the OpenSpec apply workflow)
 - [x] 5. Checkpoints, one draft pull request and the stall stop (A story checkpoints its branch)
-- [ ] 6. The checks after the agent, ready only when all pass (Only a passing story is done)
+- [x] 6. The checks after the agent, ready only when all pass (Only a passing story is done)
 - [ ] 7. The duration and cost line, with partial usage for a stopped run (A story reports its duration and cost)
 - [ ] 8. worker/README.md, the workers profile's rules and harness
 - [ ] 9. Count a story's claims only against other stories (A story counts only against stories)

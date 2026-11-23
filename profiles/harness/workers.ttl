@@ -175,7 +175,7 @@ ctl:worker-claim-lost a harness:Control ;
     harness:stage harness:runtime ; harness:category harness:authoritySafety ;
     harness:outcome harness:refuse ;
     harness:wiredBy "worker-config" ;
-    harness:enforcedAt "tools/worker.py#work_claimed" ;
+    harness:enforcedAt "tools/worker.py#work_claimed" , "tools/worker.py#finish_story" ;
     harness:statedBy guide:stop-when-claim-gone , guide:a-claim-is-a-lease ;
     harness:firedBy test:test_harness:SensorsFire.test_worker_claim_lost .
 
@@ -186,7 +186,7 @@ ctl:worker-budget-overrun a harness:Control ;
     harness:stage harness:runtime ; harness:category harness:behavior ;
     harness:outcome harness:refuse ;
     harness:wiredBy "worker-config" ;
-    harness:enforcedAt "tools/worker.py#work_claimed" ;
+    harness:enforcedAt "tools/worker.py#work_claimed" , "tools/worker.py#finish_story" ;
     harness:statedBy guide:worker-budget-and-once , guide:hand-back-when-you-stop ;
     harness:firedBy test:test_harness:SensorsFire.test_worker_budget_overrun .
 
@@ -208,6 +208,6 @@ ctl:worker-merged-before-exit a harness:Control ;
     harness:stage harness:runtime ; harness:category harness:authoritySafety ;
     harness:outcome harness:warn ;
     harness:wiredBy "worker-config" ;
-    harness:enforcedAt "tools/worker.py#work_claimed" ;
+    harness:enforcedAt "tools/worker.py#work_claimed" , "tools/worker.py#finish_story" ;
     harness:statedBy guide:worker-never-closes-or-merges ;
     harness:firedBy test:test_harness:SensorsFire.test_worker_merged_before_exit .

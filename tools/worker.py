@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import fnmatch
 import json
 import os
 import plistlib
@@ -1014,6 +1015,124 @@ class StoryWatch:
             return
         self.pr = (done.stdout.strip().splitlines() or ["(a draft pull request)"])[-1]
         log(f"story {self.change}: opened the draft pull request {self.pr}")
+
+
+# The line a story's build prints with its verdict, as JSON: `AGENT-BUILD-RESULT {"status": …}`.
+BUILD_RESULT = re.compile(r"^AGENT-BUILD-RESULT[ \t]+(.*?)[ \t]*$", re.MULTILINE)
+BUILD_TIMEOUT = 3600
+VALIDATE_TIMEOUT = 600
+
+
+@dataclass
+class Check:
+    """One check of a story after its agent: `pass`, `FAIL`, or `not configured` (no pass)."""
+
+    name: str
+    result: str
+    detail: str = ""
+
+    @property
+    def passed(self) -> bool:
+        return self.result == "pass"
+
+    @property
+    def line(self) -> str:
+        return f"- {self.name}: {self.result}" + (f" {self.detail}" if self.detail else "")
+
+
+def run_check(argv: list[str], cwd: Path, timeout: int, log_to: Path | None = None):
+    """(exit status, combined output) of a check's command; 127 when it is not there, 124 when
+    it ran past `timeout`. The output is appended to `log_to`, the item's log, when given."""
+    try:
+        done = subprocess.run(
+            argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL
+        )
+        code, out = done.returncode, (done.stdout or "") + (done.stderr or "")
+    except FileNotFoundError:
+        code, out = 127, f"`{argv[0]}` is not on PATH"
+    except subprocess.TimeoutExpired as e:
+        partial = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else e.stdout
+        code, out = 124, (partial or "") + f"\nit ran past {spoken(timeout)}"
+    if log_to is not None:
+        with log_to.open("a", encoding="utf-8") as f:
+            f.write(f"\n$ {shlex.join(argv)}  (exit {code})\n{out}")
+    return code, out
+
+
+def last_line(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[-1][:200] if lines else ""
+
+
+def story_checks(ws, change: str, base: str, table: dict) -> list[Check]:
+    """A story's checks, run by the worker in its worktree after the agent (worker/README.md,
+    "Stories"): the change validates, every task is ticked, the build passes, and UI work has
+    its screenshots."""
+    log_to = getattr(ws, "log", None)
+    checks = []
+    code, out = run_check(
+        ["openspec", "validate", change, "--strict"], ws.path, VALIDATE_TIMEOUT, log_to
+    )
+    ran = f"`openspec validate {change} --strict` exited {code}"
+    detail = ran + (f": {last_line(out)}" if code and last_line(out) else "")
+    checks.append(Check("validate", "pass" if code == 0 else "FAIL", detail))
+
+    counted = count_tasks(tasks_path(ws.path, change))
+    where = f"openspec/changes/{change}/tasks.md"
+    if counted is None:
+        checks.append(Check("tasks", "FAIL", f"{where} could not be read"))
+    elif counted[1]:
+        total = counted[0] + counted[1]
+        checks.append(Check("tasks", "FAIL", f"{counted[1]} of {total} tasks unticked in {where}"))
+    elif not counted[0]:
+        checks.append(Check("tasks", "FAIL", f"{where} has no task boxes"))
+    else:
+        checks.append(Check("tasks", "pass", f"all {counted[0]} tasks ticked"))
+
+    build = story_build(table, change)
+    if not build:
+        checks.append(Check("build", "not configured", "([story] build names no command)"))
+    else:
+        code, out = run_check(build, ws.path, BUILD_TIMEOUT, log_to)
+        verdicts = BUILD_RESULT.findall(out)
+        try:
+            verdict = json.loads(verdicts[-1]) if verdicts else None
+        except ValueError:
+            verdict = None
+        status = verdict.get("status") if isinstance(verdict, dict) else None
+        ran = f"`{shlex.join(build)}` exited {code}"
+        if code != 0:
+            checks.append(Check("build", "FAIL", f"{ran}: {last_line(out)}"))
+        elif not verdicts:
+            checks.append(Check("build", "FAIL", f"{ran} and printed no AGENT-BUILD-RESULT line"))
+        elif verdict is None:
+            checks.append(Check("build", "FAIL", f"{ran}; its AGENT-BUILD-RESULT is not JSON"))
+        elif status != "pass":
+            checks.append(Check("build", "FAIL", f"{ran}; AGENT-BUILD-RESULT status {status!r}"))
+        else:
+            checks.append(Check("build", "pass", f"{ran}; AGENT-BUILD-RESULT status 'pass'"))
+
+    globs = table.get("ui_globs") or []
+    evidence = story_evidence(table, change)
+    if not globs:
+        checks.append(Check("screenshots", "pass", "not required (no [story] ui_globs)"))
+        return checks
+    diff = git("diff", "--name-only", f"origin/{base}...HEAD", cwd=ws.path)
+    if diff.returncode != 0:
+        checks.append(Check("screenshots", "FAIL", "the changed files could not be read"))
+        return checks
+    ui = [p for p in diff.stdout.split("\n") if p and any(fnmatch.fnmatchcase(p, g) for g in globs)]
+    shots = ws.path / evidence
+    pngs = sorted(shots.rglob("*.png")) if shots.is_dir() else []
+    if not ui:
+        checks.append(Check("screenshots", "pass", "no UI path changed"))
+    elif pngs:
+        checks.append(Check("screenshots", "pass", f"{len(pngs)} PNG in {evidence}"))
+    else:
+        named = ", ".join(ui[:5]) + (", …" if len(ui) > 5 else "")
+        detail = f"UI paths changed ({named}) and {evidence} has no PNG"
+        checks.append(Check("screenshots", "FAIL", detail))
+    return checks
 
 
 # --------------------------------------------------------------------------- local state
@@ -2443,6 +2562,9 @@ class Worker:
         refused = read_agent_log(ws.log)
         took = spoken(time.monotonic() - started)
         where = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
+        if story is not None:
+            ran = f"`{argv[0]}` exited {code} after {took}"
+            return self.finish_story(item, repo, ws, story, gh, beat, ended, ran, where, refused)
 
         if ended == "lost":
             # Not ours any more: say so on the item, release NOTHING (it is someone else's,
@@ -2487,13 +2609,12 @@ class Worker:
 
         if ended == "overrun":
             gonk.fire("worker-budget-overrun", "refusal", self.cfg.repo)
-        if ended in ("overrun", "stopped", "stalled"):
-            why = {
-                "overrun": f"its budget of {spoken(self.wc.budget)} ran out",
-                "stopped": "the worker was stopped",
-                "stalled": "it stalled: no new commit and no task ticked for "
-                + spoken((self.wc.story or load_story({}, "defaults"))["stall"]),
-            }[ended]
+        if ended in ("overrun", "stopped"):
+            why = (
+                f"its budget of {spoken(self.wc.budget)} ran out"
+                if ended == "overrun"
+                else "the worker was stopped"
+            )
             note = "\n".join(
                 [
                     f"gonk worker `{holder}` stopped the agent on {display} after {took}: {why}. "
@@ -2576,6 +2697,136 @@ class Worker:
         state = "released" if released else "NOT released (it was no longer this worker's)"
         return Outcome(
             HANDED_BACK, f"handed {display} back with {evidence}; claim {state}", prs=prs
+        )
+
+    def finish_story(
+        self,
+        item: dict,
+        repo: Repo,
+        ws: Workspace,
+        story: StoryWatch,
+        gh: GitHub,
+        beat: Heartbeat,
+        ended: str,
+        ran: str,
+        where: str,
+        refused: list[str],
+        cost: str = "",
+    ) -> Outcome:
+        """After a story's agent, however it ended: push a last checkpoint, run the checks, and
+        mark the pull request ready only when every one passes and the agent ended by itself.
+        Only then is the story handed back with evidence; otherwise the pull request stays a
+        draft and the item is released with the check lines, so nothing is handed back as done
+        unless the checks pass."""
+        number, display, holder = item["number"], item.get("display"), self.cfg.holder
+        change, table = story.change, self.wc.story or load_story({}, "defaults")
+        if ended == "lost":
+            gonk.fire("worker-claim-lost", "refusal", self.cfg.repo)
+            note = (
+                f"gonk worker `{holder}` lost its claim on the story {display}: {beat.why}. It "
+                f"stopped the agent; {where}."
+            )
+            self.ledger.comment(number, note)
+            return Outcome(NOT_HANDED_BACK, note)
+        if ended == "overrun":
+            gonk.fire("worker-budget-overrun", "refusal", self.cfg.repo)
+        story.last_checkpoint()
+        checks = story_checks(ws, change, repo.base, table)
+        exited = datetime.now(UTC)
+        prs, pr_err = gh.pull_requests(ws.branch)
+        open_prs = [pr for pr in prs if pr.state.upper() == "OPEN"]
+        passed = ended == "agent" and all(c.passed for c in checks)
+        if passed and not open_prs:
+            passed, ready = False, f"Not ready: {ws.branch} has no open pull request to mark."
+        elif passed:
+            done = gh.ready(open_prs[0].number)
+            if done.returncode == 0:
+                ready = f"Every check passed: it marked {open_prs[0].url} ready for review."
+            else:
+                passed = False
+                ready = f"Not ready: `gh pr ready` failed: {said(done)}."
+        else:
+            ready = "Left a draft: " + (
+                "a check did not pass." if ended == "agent" else f"the agent {ended}."
+            )
+        if passed:
+            self.wait_for_ci(gh, prs, beat)
+        else:
+            for pr in prs:
+                gh.read_ci(pr)
+        lines = [f"Story `{change}` on {ws.branch}:", *(c.line for c in checks), ready]
+        for pr in prs:
+            draft = "" if passed or pr.state.upper() != "OPEN" else ", draft"
+            lines.append(f"- {pr.url} ({pr.state.lower()}{draft}): CI {pr.ci}")
+            if pr.state.upper() == "MERGED":
+                lines.append(merge_line(pr, exited))
+                if lines[-1].startswith("- WARNING"):
+                    gonk.fire("worker-merged-before-exit", "warning", self.cfg.repo)
+        if pr_err:
+            lines.append(f"- the pull requests could not be listed: {pr_err}")
+        if not prs and not pr_err:
+            lines.append("- no pull request: nothing was pushed")
+        lines += refused_lines(refused)
+        if report := self.report_lines(ws)[:40]:  # a `Question for Dax:` comes first
+            lines += ["", "The agent's report:", *report]
+
+        if beat.lost.is_set():
+            gonk.fire("worker-claim-lost", "refusal", self.cfg.repo)
+            first = f"gonk worker `{holder}` lost its claim on the story {display}: {beat.why}."
+            note = "\n".join([f"{first} {where}.", "", *lines])
+            self.ledger.comment(number, note)
+            return Outcome(NOT_HANDED_BACK, note.splitlines()[0], prs=prs)
+        if not passed:
+            stalled = f"no new commit and no task ticked for {spoken(table['stall'])}"
+            why = {
+                "agent": "a check did not pass",
+                "overrun": f"its budget of {spoken(self.wc.budget)} ran out",
+                "stopped": "the worker was stopped",
+                "stalled": f"it stalled: {stalled}",
+            }.get(ended, ended)
+            note = "\n".join(
+                [
+                    f"gonk worker `{holder}` hands the story {display} back without evidence "
+                    f"after {ran}: {why}. The pull request stays a draft; {where}.",
+                    "",
+                    *lines,
+                    *(["", cost] if cost else []),
+                ]
+            )
+            self.release_if_ours(number, note)
+            return Outcome(NOT_HANDED_BACK, note.splitlines()[0], prs=prs)
+
+        removed = not self.wc.keep
+        body = [
+            f"Evidence: {open_prs[0].url}",
+            "",
+            f"gonk worker `{holder}` handed this story back: {ran}. It never closes and never "
+            "merges; the dispatcher does both, after checking this evidence.",
+            "",
+            *lines,
+            "",
+            f"Branch {ws.branch}; "
+            + (f"worktree removed; log {ws.log}" if removed else where)
+            + ".",
+            *([cost] if cost else []),
+        ]
+        posted = self.hand_back(number, "\n".join(body))
+        if not posted.ok:
+            note = (
+                f"gonk worker `{holder}` could not post its evidence on the story {display} "
+                f"({posted.text()}): it was {open_prs[0].url}, marked ready. {where}."
+            )
+            self.release_if_ours(number, note)
+            return Outcome(NOT_HANDED_BACK, note, prs=prs)
+        released = self.release_if_ours(number, "")
+        if removed:
+            with CloneLock(self.wc.state_dir, repo.name):
+                remove_workspace(ws)
+        state = "released" if released else "NOT released (it was no longer this worker's)"
+        return Outcome(
+            HANDED_BACK,
+            f"handed the story {display} back with {open_prs[0].url}, ready; claim {state}",
+            prs=prs,
         )
 
     def watch(
