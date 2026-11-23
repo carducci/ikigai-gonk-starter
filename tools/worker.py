@@ -1273,11 +1273,19 @@ class Workspace:
     report: Path
 
 
-def make_workspace(root: Path, repo: Repo, number: int, start: str | None = None) -> Workspace:
+def make_workspace(
+    root: Path, repo: Repo, number: int, start: str | None = None, story: str | None = None
+) -> Workspace:
     """A fresh worktree of `origin/<start>` (by default `origin/<base>`) at
     `<root>/<repo>/item-<N>`, from one clone per repository (`.source`, fetched before each
     item). A directory left by an earlier run is never reused or removed: the next free
-    `item-<N>.<k>` is taken instead."""
+    `item-<N>.<k>` is taken instead.
+
+    A STORY (`story` is its change's id) is the exception. Its branch is `story/<id>`, started
+    from origin's `story/<id>` when there is one (a later run resumes the story) and from
+    `origin/<base>` when not; and the item's own kept worktrees are removed first, after a push
+    of their HEAD that is never forced, since `git worktree add` refuses a branch checked out in
+    another worktree. The caller holds the clone lock."""
     home = root / repo.name
     home.mkdir(parents=True, exist_ok=True)
     source = home / ".source"
@@ -1290,6 +1298,8 @@ def make_workspace(root: Path, repo: Repo, number: int, start: str | None = None
                 f"{source} is a clone of {url}, and the configuration says {repo.remote}: "
                 "move it aside, and the next item clones afresh"
             )
+        if story is not None:
+            drop_own_trees(home, number)
     must(git("fetch", "--prune", "--quiet", "origin", cwd=source), "git fetch")
     name, k = f"item-{number}", 1
     while (home / name).exists():
@@ -1302,8 +1312,15 @@ def make_workspace(root: Path, repo: Repo, number: int, start: str | None = None
     # push.default=upstream would land on someone else's work.
     track = ["--no-track"] if start else []
     origin = f"origin/{start or repo.base}"
+    new = "-b"
+    if story is not None:
+        # A story's branch is its own (story/<id>), and never tracks: the worker pushes it.
+        branch, new, track, origin = f"story/{story}", "-B", ["--no-track"], f"origin/{repo.base}"
+        resumed = f"refs/remotes/origin/{branch}"
+        if git("rev-parse", "--verify", "--quiet", resumed, cwd=source).returncode == 0:
+            origin = f"origin/{branch}"
     must(
-        git("worktree", "add", "--quiet", *track, "-b", branch, str(path), origin, cwd=source),
+        git("worktree", "add", "--quiet", *track, new, branch, str(path), origin, cwd=source),
         "git worktree add",
     )
     # The report lives inside the worktree: an agent may write nowhere else (carducci#335).
@@ -1317,6 +1334,33 @@ def make_workspace(root: Path, repo: Repo, number: int, start: str | None = None
         prompt=home / f"{name}.prompt.md",
         report=path / ".gonk" / "state" / "worker-report",
     )
+
+
+TREE_NAME = re.compile(r"^item-(\d+)(?:\.\d+)?$")
+
+
+def drop_own_trees(home: Path, number: int) -> None:
+    """Remove the worktrees an earlier run of item `number` kept under `home` (`item-<N>` and
+    `item-<N>.<k>`), for a story about to start again. The caller holds the clone lock and the
+    item's claim, so no agent is in one. A story's HEAD is pushed to its branch first, never
+    forced: a push origin refuses loses nothing there."""
+    for tree in sorted(home.iterdir()):
+        m = TREE_NAME.match(tree.name)
+        if not m or int(m.group(1)) != number or tree.is_symlink() or not tree.is_dir():
+            continue
+        if not (tree / ".git").is_file():
+            continue
+        branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=tree).stdout.strip()
+        if branch.startswith("story/"):
+            pushed = git("push", "--quiet", "origin", f"HEAD:refs/heads/{branch}", cwd=tree)
+            if pushed.returncode != 0:
+                log(f"story: could not push {tree}'s HEAD to {branch}: {said(pushed)}")
+        git("worktree", "remove", "--force", str(tree), cwd=home / ".source")
+        git("worktree", "prune", cwd=home / ".source")
+        if branch and branch != "HEAD":
+            git("branch", "-D", branch, cwd=home / ".source")
+        tree.with_name(f"{tree.name}.prompt.md").unlink(missing_ok=True)
+        log(f"story: removed the kept worktree {tree} (branch {branch}) to start item {number}")
 
 
 def exclude_state(path: Path) -> None:
@@ -2122,7 +2166,7 @@ class Worker:
                 return Outcome(NOT_HANDED_BACK, note)
         start = stacked_on["headRefName"] if stacked_on else None
         with CloneLock(self.wc.state_dir, repo.name):
-            ws = make_workspace(self.root, repo, number, start)
+            ws = make_workspace(self.root, repo, number, start, story_change(item))
             prepared = run_prepare(repo, ws, self.shutdown, beat, self.wc.grace)
         if prepared:
             kind, failed = prepared
