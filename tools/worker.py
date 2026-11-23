@@ -1250,9 +1250,7 @@ def story_checks(ws, change: str, base: str, table: dict) -> list[Check]:
     held = git("ls-tree", "-r", "--name-only", "HEAD", "--", evidence, cwd=ws.path)
     # A screenshot counts when HEAD holds it and the tree still has it (not deleted unseen).
     pngs = [
-        p
-        for p in held.stdout.split("\n")
-        if p.lower().endswith(".png") and (ws.path / p).is_file()
+        p for p in held.stdout.split("\n") if p.lower().endswith(".png") and (ws.path / p).is_file()
     ]
     if not ui:
         checks.append(Check("screenshots", "pass", "no UI path changed"))
