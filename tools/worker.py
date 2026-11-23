@@ -64,6 +64,7 @@ import argparse
 import dataclasses
 import fnmatch
 import json
+import math
 import os
 import plistlib
 import re
@@ -180,10 +181,10 @@ TOKENS = (
     "{profile}",  # [agent] profile, for an agent with profiles (hermes)
 )
 
-REPO_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+REPO_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
 GITHUB_SLUG = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 GITHUB_REMOTE = re.compile(r"github\.com[:/]([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$")
-LABEL_SHAPE = re.compile(r"^[A-Za-z0-9._:-]+$")
+LABEL_SHAPE = re.compile(r"^[A-Za-z0-9._:-]+\Z")
 
 
 @dataclass
@@ -244,7 +245,7 @@ WORKER_TOML = Path(".gonk") / "worker.toml"
 # checkout the per-repository locks (at most `max_per_repo` items of one repository at once,
 # and one writer at a time on a repository's clone under the work root) and the stop file for
 # all of them.
-LOOP_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+LOOP_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 LOOP_TOML = re.compile(r"^worker-(.+)\.toml$")
 
 
@@ -877,7 +878,7 @@ def redispatched_since(item: dict, routers: list[str], at: str | None) -> bool:
 # by the labels the dispatch pinned, never by the loop's configuration.
 STORY_LABEL = "story"
 CHANGE_PREFIX = "change:"
-CHANGE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+CHANGE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}\Z")
 
 
 def story_changes(item: dict) -> list[str]:
@@ -940,6 +941,9 @@ def count_tasks(tasks: Path) -> tuple[int, int] | None:
     return len(TICKED_TASK.findall(text)), len(OPEN_TASK.findall(text))
 
 
+PUSH_TIMEOUT = 300  # seconds a checkpoint's `git push` may take
+
+
 class StoryWatch:
     """A story's supervision while its agent runs: every `every` seconds it reads HEAD and the
     number of ticked tasks. When either has moved it CHECKPOINTS: pushes the branch to origin,
@@ -963,6 +967,7 @@ class StoryWatch:
         self.stall, self.every, self.clock = stall, every, clock
         self.title, self.body = title, body
         self.pr: str | None = None
+        self.pending: threading.Thread | None = None
         self.pushes = self.refused = 0
         self.state = self.start = self.read()
         self.moved_at = self.read_at = clock()
@@ -979,12 +984,23 @@ class StoryWatch:
             state = self.read()
             if state != self.state:
                 self.state, self.moved_at = state, now
-                self.checkpoint()
+                self.checkpoint_soon()
         return now - self.moved_at >= self.stall
+
+    def checkpoint_soon(self) -> None:
+        """Checkpoint on a thread of its own, so a push that hangs never holds `Worker.watch`
+        from its overrun, lost-claim and shutdown checks. One at a time: a move while one runs
+        is caught by the last checkpoint, which reads HEAD afresh."""
+        if self.pending is not None and self.pending.is_alive():
+            return
+        self.pending = threading.Thread(target=self.checkpoint, daemon=True)
+        self.pending.start()
 
     def last_checkpoint(self) -> None:
         """After the agent, however it ended: push what it left, unless nothing ever moved (a
         new story's branch would be the base itself, with no pull request to open)."""
+        if self.pending is not None:
+            self.pending.join(PUSH_TIMEOUT + 60)
         self.state = self.read()
         if self.state == self.start and not self.pushes:
             log(f"story {self.change}: nothing moved, so nothing is pushed")
@@ -995,7 +1011,10 @@ class StoryWatch:
         """Push HEAD to the story's branch, never forced, then make sure a draft pull request is
         open for it. False when origin refused the push."""
         branch, (head, ticked) = self.ws.branch, self.state
-        done = git("push", "--quiet", "origin", f"HEAD:refs/heads/{branch}", cwd=self.ws.path)
+        done = git(
+            "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}",
+            cwd=self.ws.path, timeout=PUSH_TIMEOUT,
+        )  # fmt: skip
         if done.returncode != 0:
             self.refused += 1
             log(
@@ -1106,9 +1125,16 @@ def log_usage(text: str) -> dict | None:
         usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
         turns, partial = count(result.get("num_turns")), False
         cost = result.get("total_cost_usd")
-        cost = (
-            float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
-        )
+        try:
+            cost = (
+                float(cost)
+                if isinstance(cost, (int, float)) and not isinstance(cost, bool)
+                else None
+            )
+        except OverflowError:
+            cost = None
+        if cost is not None and not math.isfinite(cost):
+            cost = None
     elif messages:
         usage, partial, cost = {}, True, None
         for each in messages.values():
@@ -1172,8 +1198,22 @@ def story_checks(ws, change: str, base: str, table: dict) -> list[Check]:
     detail = ran + (f": {last_line(out)}" if code and last_line(out) else "")
     checks.append(Check("validate", "pass" if code == 0 else "FAIL", detail))
 
-    counted = count_tasks(tasks_path(ws.path, change))
+    # What the pull request holds is what is committed: a change left in the tree is not it.
+    dirty = git("status", "--porcelain", "--untracked-files=no", cwd=ws.path)
+    changed = [line[3:] for line in dirty.stdout.splitlines()]
+    if dirty.returncode != 0:
+        checks.append(Check("committed", "FAIL", "the working tree's state could not be read"))
+    elif changed:
+        named = ", ".join(changed[:5]) + (", …" if len(changed) > 5 else "")
+        checks.append(Check("committed", "FAIL", f"uncommitted changes in tracked files: {named}"))
+    else:
+        checks.append(Check("committed", "pass", "no uncommitted change to a tracked file"))
+
     where = f"openspec/changes/{change}/tasks.md"
+    shown = git("show", f"HEAD:{where}", cwd=ws.path)
+    counted = None
+    if shown.returncode == 0:
+        counted = (len(TICKED_TASK.findall(shown.stdout)), len(OPEN_TASK.findall(shown.stdout)))
     if counted is None:
         checks.append(Check("tasks", "FAIL", f"{where} could not be read"))
     elif counted[1]:
@@ -1217,8 +1257,10 @@ def story_checks(ws, change: str, base: str, table: dict) -> list[Check]:
         checks.append(Check("screenshots", "FAIL", "the changed files could not be read"))
         return checks
     ui = [p for p in diff.stdout.split("\n") if p and any(fnmatch.fnmatchcase(p, g) for g in globs)]
-    shots = ws.path / evidence
-    pngs = sorted(shots.rglob("*.png")) if shots.is_dir() else []
+    listed = git("ls-tree", "-r", "--name-only", "HEAD", "--", evidence, cwd=ws.path)
+    # Committed, and still there: an untracked picture is not in the pull request.
+    pictures = [p for p in listed.stdout.splitlines() if p.lower().endswith(".png")]
+    pngs = [p for p in pictures if (ws.path / p).is_file()]
     if not ui:
         checks.append(Check("screenshots", "pass", "no UI path changed"))
     elif pngs:
@@ -1351,8 +1393,8 @@ class RepoLock:
     """Up to `slots` items of one repository on this machine: an exclusive lock on one of
     `slots` files per repository (`<repo>.lock`, then `<repo>.2.lock`, ...), released when the
     process ends however it ends. One slot is the lock file every earlier worker took. A `kind`
-    other than `other` (`claim_kind`: review, story) has slots of its own (`<repo>.story.lock`,
-    `<repo>.story.2.lock`, ...), so a story never waits for a coder's slot on this machine."""
+    other than `other` (a story; a review shares the coders' slots) has slots of its own
+    (`<repo>.story.lock`, `<repo>.story.2.lock`, ...), so a story never waits for a coder's slot on this machine."""
 
     def __init__(self, state_dir: Path, repo: str, slots: int = 1, kind: str = "other") -> None:
         stem = repo if kind == "other" else f"{repo}.{kind}"
@@ -1484,8 +1526,16 @@ class Heartbeat(threading.Thread):
 # --------------------------------------------------------------------------- git and gh
 
 
-def git(*argv: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True)
+def git(
+    *argv: str, cwd: Path | None = None, timeout: float | None = None
+) -> subprocess.CompletedProcess:
+    """git in `cwd`; with a `timeout`, a command that outlasts it is killed and answers 124."""
+    try:
+        return subprocess.run(
+            ["git", *argv], cwd=cwd, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(argv, 124, "", f"git did not answer within {timeout}s")
 
 
 class StepFailed(Exception):
@@ -1657,7 +1707,7 @@ def make_workspace(
     )
 
 
-TREE_NAME = re.compile(r"^item-(\d+)(?:\.\d+)?$")
+TREE_NAME = re.compile(r"^item-(\d+)(?:\.\d+)?\Z")
 
 
 def drop_own_trees(home: Path, number: int) -> None:
@@ -1673,9 +1723,19 @@ def drop_own_trees(home: Path, number: int) -> None:
             continue
         branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=tree).stdout.strip()
         if branch.startswith("story/"):
-            pushed = git("push", "--quiet", "origin", f"HEAD:refs/heads/{branch}", cwd=tree)
+            pushed = git(
+                "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}",
+                cwd=tree, timeout=PUSH_TIMEOUT,
+            )  # fmt: skip
             if pushed.returncode != 0:
-                log(f"story: could not push {tree}'s HEAD to {branch}: {said(pushed)}")
+                # Keep what the tree holds on a ref of its own before the tree and branch go.
+                head = git("rev-parse", "HEAD", cwd=tree).stdout.strip()
+                saved = f"rescued/{tree.name}-{head[:12]}"
+                git("branch", "-f", saved, head, cwd=home / ".source")
+                log(
+                    f"story: could not push {tree}'s HEAD to {branch}: {said(pushed)}; "
+                    f"its commits stay on the branch {saved}"
+                )
         git("worktree", "remove", "--force", str(tree), cwd=home / ".source")
         git("worktree", "prune", cwd=home / ".source")
         if branch and branch != "HEAD":
@@ -1775,7 +1835,7 @@ class PullRequest:
     draft: bool = False
 
 
-FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+FULL_SHA = re.compile(r"^[0-9a-f]{40}\Z")
 GREEN = {"success", "skipped", "neutral"}
 
 
@@ -2494,7 +2554,9 @@ class Worker:
         for item, sent in self.edited:
             self.hand_back_edited(item, sent)
         for item, repo in take:
-            kind = self.kind_of(item)
+            # Only a story has machine slots of its own; a review waits for a coder here as before.
+            story = claim_kind(item) == "story" and "review" not in self.wc.labels
+            kind = "story" if story else "other"
             lock = RepoLock(self.wc.state_dir, repo.name, self.wc.max_per_repo, kind)
             if not lock.acquire():
                 of = "" if kind == "other" else f" {kind}"
@@ -2857,8 +2919,15 @@ class Worker:
         prs, pr_err = gh.pull_requests(ws.branch)
         open_prs = [pr for pr in prs if pr.state.upper() == "OPEN"]
         passed = ended == "agent" and all(c.passed for c in checks)
+        checked = story.state[0]  # the HEAD the checks ran on
         if passed and not open_prs:
             passed, ready = False, f"Not ready: {ws.branch} has no open pull request to mark."
+        elif passed and open_prs[0].sha != checked:
+            passed = False
+            ready = (
+                f"Not ready: the checks ran on {checked[:12]}, but {open_prs[0].url} holds "
+                f"{open_prs[0].sha[:12]} (origin refused a push, which is never forced)."
+            )
         elif passed:
             done = gh.ready(open_prs[0].number)
             if done.returncode == 0:
