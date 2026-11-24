@@ -2899,8 +2899,7 @@ class Worker:
             gh.make_draft(p)[1] for p in prs + strays if p.state.upper() == "OPEN" and not p.draft
         ]
         drafted += [
-            f"- {p.url} ({p.state.lower()}) is not the pull request the brief named"
-            for p in strays
+            f"- {p.url} ({p.state.lower()}) is not the pull request the brief named" for p in strays
         ]
         if ended == "agent":
             self.wait_for_ci(gh, prs, beat)
