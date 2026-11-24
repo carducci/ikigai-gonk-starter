@@ -856,15 +856,22 @@ def own_problem(pr: dict, number: int) -> str | None:
 
 
 def branch_moved(ws: Workspace) -> bool:
-    """Whether origin's `ws.branch` moved past `ws.cut`, its head when the worktree was cut:
-    this run pushed onto a PR's own branch. Unread, or not a descendant, is not moved."""
+    """Whether THIS run's agent pushed onto a PR's own branch: the worktree's HEAD is past
+    `ws.cut` (origin's head when the worktree was cut), and origin's `ws.branch` holds it.
+    Someone else's push to the branch while the agent ran moves origin, not the worktree.
+    Unread, or not a descendant, is not moved."""
     if not ws.cut:
+        return False
+    mine = git("rev-parse", "HEAD", cwd=ws.path).stdout.strip()
+    if not mine or mine == ws.cut:
+        return False
+    if git("merge-base", "--is-ancestor", ws.cut, mine, cwd=ws.path).returncode != 0:
         return False
     remote = git("ls-remote", "origin", f"refs/heads/{ws.branch}", cwd=ws.path, timeout=120)
     head = (remote.stdout.split() or [""])[0] if remote.returncode == 0 else ""
-    if not head or head == ws.cut:
+    if not head:
         return False
-    return git("merge-base", "--is-ancestor", ws.cut, head, cwd=ws.path).returncode == 0
+    return git("merge-base", "--is-ancestor", mine, head, cwd=ws.path).returncode == 0
 
 
 # A review's verdict, the line the router reads (ikigraph item_flow.VERDICT): at a line's start,
@@ -1806,6 +1813,13 @@ def drop_own_trees(home: Path, number: int, push: bool = True) -> list[str]:
                 continue
             if commits:
                 ref = f"refs/worker/dropped/{tree.name}"
+                k = 1
+                while (
+                    git("rev-parse", "--verify", "--quiet", ref, cwd=home / ".source").returncode
+                    == 0
+                ):  # an earlier drop's ref is never moved: its commits would reach no ref
+                    k += 1
+                    ref = f"refs/worker/dropped/{tree.name}-{k}"
                 git("update-ref", ref, commits[0], cwd=home / ".source")
                 dropped.append(
                     f"- The worker pushed nothing before the agent: an earlier run's kept "
@@ -2876,8 +2890,17 @@ class Worker:
             # On its own branch, every PR an earlier run opened there is listed too: only the
             # one the brief named is this item's, and it is evidence only for what THIS run
             # pushed to it (ws.cut is origin's head of the branch before the agent started).
+            # A ready PR the agent opened there against its rule is still made a draft.
+            strays = [p for p in prs if p.url != stacked_on["url"]]
             prs = [p for p in prs if p.url == stacked_on["url"]]
-        drafted = [gh.make_draft(p)[1] for p in prs if p.state.upper() == "OPEN" and not p.draft]
+        else:
+            strays = []
+        drafted = [
+            gh.make_draft(p)[1] for p in prs + strays if p.state.upper() == "OPEN" and not p.draft
+        ]
+        drafted += [
+            f"- {p.url} ({p.state.lower()}) is not the pull request the brief named" for p in strays
+        ]
         if ended == "agent":
             self.wait_for_ci(gh, prs, beat)
         else:
