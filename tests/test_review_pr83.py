@@ -51,7 +51,6 @@ class OwnBranchHandBack(one.AFixOnThePullRequestsOwnBranch):
         self.assertTrue(comment.startswith(f"Evidence: {new['url']}\n"), comment)
         self.assertNotIn(f"Evidence: {one.PR1}\n", comment)
 
-
     def test_a_kept_trees_unpushed_commits_are_not_pushed_onto_the_pr(self):
         """`own` runs drop_own_trees for a task item, which pushes each kept worktree's HEAD to
         its branch before the agent starts: commits an earlier run of the item made and never
