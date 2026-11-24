@@ -289,7 +289,7 @@ class Rig:
         self.checkout = scratch_repo(test)
         self.record = self.tmp / "record"
         self.gh_state = self.tmp / "gh.json"
-        self.gh_state.write_text(json.dumps({"slug": "acme/lib"}))
+        self.gh_state.write_text(json.dumps({"slug": "acme/lib", "prs": []}))
         (self.checkout / ".gonk" / "gonk.toml").write_text(f'ledger = "{ledger_name}"\n')
         sock = target or str(self.tmp / "g.sock")
         (self.checkout / ".gonk" / "local.toml").write_text(
