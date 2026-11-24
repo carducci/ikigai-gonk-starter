@@ -506,6 +506,17 @@ ctl:worker-no-evidence a harness:Control ;
     harness:statedBy guide:report-with-evidence , guide:hand-back-when-you-stop ;
     harness:firedBy test:test_harness:SensorsFire.test_worker_no_evidence .
 
+ctl:worker-no-verdict a harness:Control ;
+    rdfs:label "worker: no review hand-back without a verdict line" ;
+    rdfs:comment "When a review's report has no REVIEW: verdict line at the start of a line, the worker releases the item with a note rather than handing it back as evidence: the router reads that line as a machine line." ;
+    harness:direction harness:feedback ; harness:execution harness:computational ;
+    harness:stage harness:runtime ; harness:category harness:behavior ;
+    harness:outcome harness:refuse ;
+    harness:wiredBy "worker-config" ;
+    harness:enforcedAt "tools/worker.py#work_claimed" ;
+    harness:statedBy guide:report-with-evidence , guide:hand-back-when-you-stop ;
+    harness:firedBy test:test_harness:SensorsFire.test_worker_no_verdict .
+
 ctl:worker-merged-before-exit a harness:Control ;
     rdfs:label "worker: a merge while the agent ran" ;
     rdfs:comment "The hand-back calls out a pull request the run opened that was merged before the agent exited: by the agent, against its rules, unless someone else merged it meanwhile. A warning: only branch protection can stop an agent merging." ;

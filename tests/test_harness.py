@@ -661,6 +661,15 @@ class SensorsFire(unittest.TestCase):
         self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
         assert_fired(self, rig.checkout, "worker-no-evidence")
 
+    def test_worker_no_verdict(self):
+        rig, ledger = Rig(self), FakeLedger()
+        rig.agent_flags = ["--no-pr", "--report", "https://github.com/acme/lib/pull/7\nfine\n"]
+        rig.configure()
+        ledger.file("Review it", ["worker:w1", "repo:lib", "review"])
+        _, outcome = self.run_once(rig, ledger)
+        self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+        assert_fired(self, rig.checkout, "worker-no-verdict")
+
     def test_worker_merged_before_exit(self):
         rig, ledger = self.worker_rig(), FakeLedger()
         state = rig.gh()

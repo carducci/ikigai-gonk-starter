@@ -3,6 +3,8 @@ review and fix are moves of the same item, not items of their own. The worker's 
 
 - `Continue PR #N on its own branch` in the brief: the fix lands on that PR's own branch, the
   one this item's earlier run opened, and the PR stays the item's one evidence. No stacked PR.
+- A review hands back with a `REVIEW:` verdict line, which the router reads as a machine line;
+  a review with none is not handed back as evidence.
 """
 
 from __future__ import annotations
@@ -105,6 +107,54 @@ class AFixOnThePullRequestsOwnBranch(unittest.TestCase):
         self.assertEqual(self.run_it().code, worker.HANDED_BACK)
         self.assertEqual(git("rev-parse", branch, cwd=self.rig.origin).strip(), self.first)
         self.assertEqual([1, 2], [pr["number"] for pr in self.rig.gh()["prs"]])
+
+
+class AReviewsVerdictLine(unittest.TestCase):
+    def setUp(self):
+        self.quiet = contextlib.redirect_stdout(io.StringIO())
+        self.quiet.__enter__()
+        self.addCleanup(self.quiet.__exit__, None, None, None)
+        self.ledger = FakeLedger()
+        self.rig = Rig(self)
+
+    def review(self, report: str):
+        labels = ["worker:w1", "repo:lib", "review"]
+        n = self.ledger.file("Review round 1", labels, body="Review it.")
+        self.rig.agent_flags = ["--no-pr", "--report", report]
+        self.rig.configure()
+        return n, self.rig.worker(self.ledger).run_once()
+
+    URL = "https://github.com/acme/lib/pull/7"
+
+    def test_a_verdict_line_is_handed_back_as_a_line_of_its_own(self):
+        for verdict in ("REVIEW: clean", "REVIEW: red 3", "REVIEW: unverified no build agent"):
+            with self.subTest(verdict=verdict):
+                self.setUp()
+                n, outcome = self.review(f"{self.URL}\n{verdict}\nwhat it found\n")
+                self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
+                [comment] = evidence_comments(self.ledger.items[n])
+                self.assertEqual(comment.splitlines()[:2], [f"Evidence: {self.URL}", verdict])
+
+    def test_a_review_with_no_verdict_line_is_not_handed_back_as_evidence(self):
+        for report in (
+            f"{self.URL}\nLooks fine to me.\n",
+            f"{self.URL}\nreview: clean\n",
+            f"{self.URL}\nREVIEW: green\n",
+            f"{self.URL}\n  REVIEW: clean\n",
+        ):
+            with self.subTest(report=report):
+                self.setUp()
+                n, outcome = self.review(report)
+                self.assertEqual(outcome.code, worker.NOT_HANDED_BACK, outcome.summary)
+                self.assertEqual([], evidence_comments(self.ledger.items[n]))
+                said = "\n".join(c["text"] for c in self.ledger.human_comments(n))
+                self.assertIn("no `REVIEW:` verdict line", said)
+
+    def test_a_task_needs_no_verdict_line(self):
+        self.ledger.file("Fix it", ["worker:w1", "repo:lib"], body="Fix it.")
+        self.rig.agent_flags = ["--no-pr", "--report", f"{self.URL}\nIt does not reproduce.\n"]
+        self.rig.configure()
+        self.assertEqual(self.rig.worker(self.ledger).run_once().code, worker.HANDED_BACK)
 
 
 if __name__ == "__main__":

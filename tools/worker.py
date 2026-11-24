@@ -50,7 +50,8 @@ What it does with one item, in order:
    which does not know the argument and ignores it — reads, and what the brief filters on.
    The worker NEVER closes and NEVER merges: the dispatcher does both. It never marks a pull
    request ready either: what it hands back is a draft, and the router marks it ready after a
-   clean review.
+   clean review. A review (an item labelled `review`) is handed back only with a `REVIEW:`
+   verdict line in its report, which the hand-back repeats as its second line for the router.
 
 Each decision above that enforces a rule (a skip, a lost claim, a budget, a hand-back without
 evidence, a merge while the agent ran, a refused configuration) is a sensor of the harness and
@@ -849,6 +850,14 @@ def own_problem(pr: dict, number: int) -> str | None:
     if re.fullmatch(rf"worker/item-{number}(?:\.\d+)?-\d{{8}}T\d{{6}}", branch):
         return None
     return f"its branch {branch} is not this item's own branch (worker/item-{number}-…)"
+
+
+# A review's verdict, the line the router reads (ikigraph item_flow.VERDICT): at a line's start.
+VERDICT = re.compile(r"REVIEW: (?:clean|red \d+|blocking \d+|unverified)\b")
+
+
+def is_review(item: dict) -> bool:
+    return "review" in (item.get("labels") or [])
 
 
 def stack_problem(pr: dict | None, err: str | None, slug: str, named: str | None) -> str | None:
@@ -2883,9 +2892,26 @@ class Worker:
             self.release_if_ours(number, note)
             return Outcome(NOT_HANDED_BACK, note, prs=prs)
 
+        verdict = None
+        if is_review(item):
+            verdict = next((ln.rstrip() for ln in self.report_lines(ws) if VERDICT.match(ln)), None)
+            if verdict is None:
+                gonk.fire("worker-no-verdict", "refusal", self.cfg.repo)
+                said = self.report_lines(ws)[:40]
+                note = (
+                    f"gonk worker `{holder}` handed the review {display} back without evidence: "
+                    f"{agent}, and its report has no `REVIEW:` verdict line (`REVIEW: clean`, "
+                    "`REVIEW: red <n>`, `REVIEW: blocking <n>` or `REVIEW: unverified <what>`, "
+                    f"at the start of a line). Its evidence would have been {evidence}. {where}."
+                )
+                if said:
+                    note += "\n\nThe agent's report:\n" + "\n".join(said)
+                self.release_if_ours(number, note)
+                return Outcome(NOT_HANDED_BACK, note, prs=prs)
         removed = not self.wc.keep
         body = [
             f"Evidence: {evidence}",
+            *([verdict] if verdict else []),
             "",
             f"gonk worker `{holder}` handed this back: {agent}. It never closes and never "
             "merges; the dispatcher does both, after checking this evidence.",
