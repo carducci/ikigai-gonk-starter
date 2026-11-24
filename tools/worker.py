@@ -37,6 +37,9 @@ What it does with one item, in order:
    When it says `Continue PR #N on its own branch`, the worktree is ON that PR's branch, which
    must be this item's own (`worker/item-<N>-…`): the agent pushes there and opens no PR, and
    that PR stays the item's one evidence (one item per piece of work: its fixes land on it).
+   It is evidence of a run only while open, when the agent moved origin's branch past where the
+   worktree was cut and exited 0; and the worker pushes nothing there itself (a kept worktree's
+   unpushed commits are dropped and named, not pushed).
 4. The agent, from the configured command template, with the item as its brief behind a fixed
    preamble; stopped when the wall-clock budget runs out. The title and body are the task (the
    dispatch pinned them); the comments follow as quoted blocks, each under its author, and
@@ -852,8 +855,24 @@ def own_problem(pr: dict, number: int) -> str | None:
     return f"its branch {branch} is not this item's own branch (worker/item-{number}-…)"
 
 
-# A review's verdict, the line the router reads (ikigraph item_flow.VERDICT): at a line's start.
-VERDICT = re.compile(r"REVIEW: (?:clean|red \d+|blocking \d+|unverified)\b")
+def branch_moved(ws: Workspace) -> bool:
+    """Whether origin's `ws.branch` moved past `ws.cut`, its head when the worktree was cut:
+    this run pushed onto a PR's own branch. Unread, or not a descendant, is not moved."""
+    if not ws.cut:
+        return False
+    remote = git("ls-remote", "origin", f"refs/heads/{ws.branch}", cwd=ws.path, timeout=120)
+    head = (remote.stdout.split() or [""])[0] if remote.returncode == 0 else ""
+    if not head or head == ws.cut:
+        return False
+    return git("merge-base", "--is-ancestor", ws.cut, head, cwd=ws.path).returncode == 0
+
+
+# A review's verdict, the line the router reads (ikigraph item_flow.VERDICT): at a line's start,
+# in the template's forms only, each the whole line: `REVIEW: clean`, `REVIEW: red <n>`,
+# `REVIEW: blocking <n>` and `REVIEW: unverified <what>`. A subset of what the router accepts
+# (`^REVIEW: (clean|red (\d+)|blocking \d+|unverified)\b`), so a line handed back is never one
+# the router reads differently or not at all (`REVIEW: red 3.5`, `REVIEW: clean-ish`).
+VERDICT = re.compile(r"REVIEW: (?:clean|red \d+|blocking \d+|unverified \S.*?)\s*\Z")
 
 
 def is_review(item: dict) -> bool:
@@ -1667,6 +1686,8 @@ class Workspace:
     log: Path
     prompt: Path
     report: Path
+    cut: str = ""  # on a PR's own branch: origin's head of it when the worktree was cut
+    dropped: list[str] = field(default_factory=list)  # kept trees' unpushed commits, dropped
 
 
 def make_workspace(
@@ -1688,10 +1709,15 @@ def make_workspace(
     of their HEAD that is never forced, since `git worktree add` refuses a branch checked out in
     another worktree. With `own`, the worktree is on `start` itself, a pull request's branch that
     is the item's own, cut from origin's and never tracking it; the item's kept worktrees are
-    removed first, as for a story. The caller holds the clone lock."""
+    removed first, as for a story, but WITHOUT a push: the worker pushes nothing onto the PR
+    before the agent starts, and a kept tree's unpushed commits are named in `dropped` (and kept
+    on a local ref of the clone) for the hand-back to say. `cut` is origin's head of the branch
+    as the worktree is cut, which this run's evidence is judged against. The caller holds the
+    clone lock."""
     home = root / repo.name
     home.mkdir(parents=True, exist_ok=True)
     source = home / ".source"
+    dropped: list[str] = []
     if not (source / ".git").exists():
         must(git("clone", "--no-checkout", "--quiet", repo.remote, str(source)), "git clone")
     else:
@@ -1701,8 +1727,10 @@ def make_workspace(
                 f"{source} is a clone of {url}, and the configuration says {repo.remote}: "
                 "move it aside, and the next item clones afresh"
             )
-        if story is not None or own:
+        if story is not None:
             drop_own_trees(home, number)
+        elif own:
+            dropped = drop_own_trees(home, number, push=False)
     must(git("fetch", "--prune", "--quiet", "origin", cwd=source), "git fetch")
     name, k = f"item-{number}", 1
     while (home / name).exists():
@@ -1715,9 +1743,10 @@ def make_workspace(
     # push.default=upstream would land on someone else's work.
     track = ["--no-track"] if start else []
     origin = f"origin/{start or repo.base}"
-    new = "-b"
+    new, cut = "-b", ""
     if own and start:
         branch, new = start, "-B"  # the PR's own branch: the agent pushes to it, never forced
+        cut = must(git("rev-parse", origin, cwd=source), "git rev-parse").strip()
     if story is not None:
         # A story's branch is its own (story/<id>), and never tracks: the worker pushes it.
         branch, new, track, origin = f"story/{story}", "-B", ["--no-track"], f"origin/{repo.base}"
@@ -1738,17 +1767,25 @@ def make_workspace(
         log=home / f"{name}.log",
         prompt=home / f"{name}.prompt.md",
         report=path / ".gonk" / "state" / "worker-report",
+        cut=cut,
+        dropped=dropped,
     )
 
 
 TREE_NAME = re.compile(r"^item-(\d+)(?:\.\d+)?\Z")
 
 
-def drop_own_trees(home: Path, number: int) -> None:
+def drop_own_trees(home: Path, number: int, push: bool = True) -> list[str]:
     """Remove the worktrees an earlier run of item `number` kept under `home` (`item-<N>` and
     `item-<N>.<k>`), for a story about to start again. The caller holds the clone lock and the
     item's claim, so no agent is in one. A story's HEAD is pushed to its branch first, never
-    forced: a push origin refuses loses nothing there."""
+    forced: a push origin refuses loses nothing there.
+
+    With `push` False (an item continuing its PR's own branch) nothing is pushed: no agent of
+    this run made a kept tree's commits, so they never reach the PR. Its commits origin lacks
+    are kept on a local ref of the clone, `refs/worker/dropped/<tree>`, and named in the lines
+    this returns, for the hand-back."""
+    dropped: list[str] = []
     for tree in sorted(home.iterdir()):
         m = TREE_NAME.match(tree.name)
         if not m or int(m.group(1)) != number or tree.is_symlink() or not tree.is_dir():
@@ -1761,6 +1798,21 @@ def drop_own_trees(home: Path, number: int) -> None:
             if not git("for-each-ref", "--contains", head, cwd=home / ".source").stdout.strip():
                 log(f"story: {tree} is detached at a commit on no ref; the tree is kept")
                 continue
+        elif not push:
+            unpushed = git("rev-list", "HEAD", "--not", "--remotes=origin", cwd=tree)
+            commits = unpushed.stdout.split()
+            if unpushed.returncode != 0:
+                log(f"could not list {tree}'s unpushed commits: {said(unpushed)}; the tree is kept")
+                continue
+            if commits:
+                ref = f"refs/worker/dropped/{tree.name}"
+                git("update-ref", ref, commits[0], cwd=home / ".source")
+                dropped.append(
+                    f"- The worker pushed nothing before the agent: an earlier run's kept "
+                    f"worktree {tree} had {len(commits)} commit(s) on {branch} that origin "
+                    f"never got, up to {commits[0]}. They were dropped from the branch, not "
+                    f"pushed onto the pull request; the clone keeps them at {ref}."
+                )
         else:
             pushed = git(
                 "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}",
@@ -1777,7 +1829,8 @@ def drop_own_trees(home: Path, number: int) -> None:
         if branch and branch != "HEAD":
             git("branch", "-D", branch, cwd=home / ".source")
         tree.with_name(f"{tree.name}.prompt.md").unlink(missing_ok=True)
-        log(f"story: removed the kept worktree {tree} (branch {branch}) to start item {number}")
+        log(f"removed the kept worktree {tree} (branch {branch}) to start item {number}")
+    return dropped
 
 
 def exclude_state(path: Path) -> None:
@@ -1939,12 +1992,14 @@ class GitHub:
             "--title", title, "--body", body, cwd=cwd,
         )  # fmt: skip
 
-    def make_draft(self, pr: PullRequest) -> str:
-        """Undo `ready` on a worker PR (ledger item 1143); pr.draft keeps what the agent opened."""
+    def make_draft(self, pr: PullRequest) -> tuple[bool, str]:
+        """Undo `ready` on a worker PR (ledger item 1143): (whether it is a draft now, the line
+        that says so). pr.draft keeps what the agent opened."""
         done = self.run("pr", "ready", str(pr.number), "-R", self.slug, "--undo")
         if done.returncode:
-            return f"- {pr.url} was opened ready; making it a draft failed: {done.stderr.strip()}"
-        return f"- {pr.url} was opened ready; the worker made it a draft (ledger item 1143)"
+            err = (done.stderr or done.stdout).strip() or f"gh exit {done.returncode}"
+            return False, f"- {pr.url} was opened ready; making it a draft failed: {err}"
+        return True, f"- {pr.url} was opened ready; the worker made it a draft (ledger item 1143)"
 
     def read_ci(self, pr: PullRequest) -> None:
         """The PR's CI, from its checks, or from the Actions runs for its head when the token
@@ -2719,6 +2774,7 @@ class Worker:
                 f"gonk worker `{holder}` hands {display} back without evidence: {failed}. "
                 f"The agent never started; {where}."
             )
+            note += "".join(f"\n{line}" for line in ws.dropped)
             if kind == "lost":
                 # Not ours any more: say so, release nothing, as for an agent that lost it.
                 gonk.fire("worker-claim-lost", "refusal", self.cfg.repo)
@@ -2815,7 +2871,13 @@ class Worker:
             return Outcome(NOT_HANDED_BACK, note)
 
         prs, pr_err = gh.pull_requests(ws.branch)
-        drafted = [gh.make_draft(p) for p in prs if p.state.upper() == "OPEN" and not p.draft]
+        own = bool(stacked_on and stacked_on.get("own"))
+        if own:
+            # On its own branch, every PR an earlier run opened there is listed too: only the
+            # one the brief named is this item's, and it is evidence only for what THIS run
+            # pushed to it (ws.cut is origin's head of the branch before the agent started).
+            prs = [p for p in prs if p.url == stacked_on["url"]]
+        drafted = [gh.make_draft(p)[1] for p in prs if p.state.upper() == "OPEN" and not p.draft]
         if ended == "agent":
             self.wait_for_ci(gh, prs, beat)
         else:
@@ -2835,6 +2897,7 @@ class Worker:
             lines.append(f"- {pr.url} ({pr.state.lower()}): CI {pr.ci}")
             lines.append(f"  from {pr.ci_source}" + (f": {pr.ci_detail}" if pr.ci_detail else ""))
         lines.extend(drafted)
+        lines.extend(ws.dropped)
         if pr_err:
             lines.append(f"- the pull requests could not be listed: {pr_err}")
         for pr in prs:
@@ -2864,7 +2927,23 @@ class Worker:
 
         # A reviewer's failing tests go up before anything else is reported (review-once).
         review_lines = [] if review_before is None else push_review_branches(ws.path, review_before)
-        evidence = prs[0].url if prs else self.reported_evidence(ws)
+        if own:
+            # The PR existed before the run: it is THIS run's evidence only while it is open,
+            # after the agent moved origin's branch past where it was cut and exited 0.
+            moved = branch_moved(ws)
+            open_pr = next((p for p in prs if p.state.upper() == "OPEN"), None)
+            done = open_pr is not None and moved and code == 0
+            evidence = open_pr.url if done else self.reported_evidence(ws)
+            mine = f"{ws.branch}, the branch of {stacked_on['url']},"
+            if not moved:
+                did = f"pushed nothing new to {mine}"
+            elif code != 0:
+                did = f"failed after pushing to {mine}"
+            else:
+                did = f"pushed to {ws.branch}, but {stacked_on['url']} is no longer open,"
+        else:
+            evidence = prs[0].url if prs else self.reported_evidence(ws)
+            did = f"opened no pull request on {ws.branch}"
         if not evidence:
             gonk.fire("worker-no-evidence", "refusal", self.cfg.repo)
             try:
@@ -2874,7 +2953,7 @@ class Worker:
             said = [line for line in said if line.strip()][:40]
             note = (
                 f"gonk worker `{holder}` handed {display} back without evidence: {agent}, "
-                f"opened no pull request on {ws.branch} and "
+                f"{did} and "
                 + (
                     "wrote no evidence URL to its report file"
                     if said
@@ -3013,10 +3092,27 @@ class Worker:
         else:
             for pr in prs:
                 gh.read_ci(pr)
-        drafted = [gh.make_draft(p) for p in open_prs if not p.draft]
+        # A ready PR made a draft again; one gh would not undo stays ready, and the story is not
+        # done: handed back with evidence, its pull request MUST still be a draft.
+        drafts, drafted = {p.number for p in open_prs if p.draft}, []
+        for p in open_prs:
+            if not p.draft:
+                undone, line = gh.make_draft(p)
+                drafted.append(line)
+                if undone:
+                    drafts.add(p.number)
+        stuck = [p.url for p in open_prs if p.number not in drafts]
+        if stuck:
+            why = "a check did not pass" if ended == "agent" else f"the agent {ended}"
+            why = "every check passed" if passed else why
+            ready = (
+                f"Not done: {why}, but {', '.join(stuck)} is ready, and the worker could not "
+                "make it a draft."
+            )
+            passed = False
         lines = [f"Story `{change}` on {ws.branch}:", *(c.line for c in checks), ready, *drafted]
         for pr in prs:
-            draft = ", draft" if pr.state.upper() == "OPEN" else ""
+            draft = ", draft" if pr.number in drafts else ""
             lines.append(f"- {pr.url} ({pr.state.lower()}{draft}): CI {pr.ci}")
             if pr.state.upper() == "MERGED":
                 lines.append(merge_line(pr, exited))
@@ -3044,10 +3140,17 @@ class Worker:
                 "stopped": "the worker was stopped",
                 "stalled": f"it stalled: {stalled}",
             }.get(ended, ended)
+            if stuck and ended == "agent" and all(c.passed for c in checks):
+                why = "its pull request could not be made a draft"
+            pr_is = (
+                f"{', '.join(stuck)} is still ready: gh would not make it a draft"
+                if stuck
+                else "The pull request stays a draft"
+            )
             note = "\n".join(
                 [
                     f"gonk worker `{holder}` hands the story {display} back without evidence "
-                    f"after {ran}: {why}. The pull request stays a draft; {where}.",
+                    f"after {ran}: {why}. {pr_is}; {where}.",
                     "",
                     *lines,
                     *(["", cost] if cost else []),
@@ -3074,7 +3177,7 @@ class Worker:
         if not posted.ok:
             note = (
                 f"gonk worker `{holder}` could not post its evidence on the story {display} "
-                f"({posted.text()}): it was {open_prs[0].url}, marked ready. {where}."
+                f"({posted.text()}): it was {open_prs[0].url}, a draft. {where}."
             )
             self.release_if_ours(number, note)
             return Outcome(NOT_HANDED_BACK, note, prs=prs)
@@ -3085,7 +3188,7 @@ class Worker:
         state = "released" if released else "NOT released (it was no longer this worker's)"
         return Outcome(
             HANDED_BACK,
-            f"handed the story {display} back with {open_prs[0].url}, ready; claim {state}",
+            f"handed the story {display} back with {open_prs[0].url}, a draft; claim {state}",
             prs=prs,
         )
 
