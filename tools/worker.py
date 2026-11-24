@@ -961,22 +961,44 @@ def story_problem(item: dict) -> str | None:
     return None
 
 
-STORY_BASE = re.compile(r"^Base: (\S+)[ \t]*$", re.M)
+STORY_BASE = re.compile(r"^Base:[ \t]*(.*?)[ \t\r]*$", re.M)
 PLAIN_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+
+
+def story_base_line(item: dict) -> str | None:
+    """What the body's `Base:` line names, or None when the body has no such line."""
+    m = STORY_BASE.search(item.get("body") or "")
+    return m.group(1) if m else None
+
+
+def usable_branch(name: str) -> bool:
+    return (
+        bool(PLAIN_BRANCH.fullmatch(name))
+        and name != "HEAD"
+        and ".." not in name
+        and "//" not in name
+        and not name.endswith(("/", "."))
+        and not any(part.startswith(".") or part.endswith(".lock") for part in name.split("/"))
+    )
 
 
 def story_base(item: dict) -> str | None:
     """The branch a story starts from and opens its pull request into: the `Base: <branch>` line
     of the body the dispatch pinned. pax-explore files it; stories that build on each other share
-    one feature branch. None when there is no such line, or it names no plain branch; then the
-    repository's base holds."""
-    m = STORY_BASE.search(item.get("body") or "")
-    if not m:
+    one feature branch. None when there is no such line, or it names no plain branch (see
+    `story_base_problem`: a line that names none is not a story to start from the repository's
+    base)."""
+    name = story_base_line(item)
+    return name if name is not None and usable_branch(name) else None
+
+
+def story_base_problem(item: dict) -> str | None:
+    """Why a story's `Base:` line cannot be followed, or None: no such line, or a usable branch.
+    A story that names a base is never started from the repository's base instead."""
+    name = story_base_line(item)
+    if name is None or usable_branch(name):
         return None
-    name = m.group(1)
-    if not PLAIN_BRANCH.fullmatch(name) or ".." in name or name.endswith(("/", ".lock")):
-        return None
-    return name
+    return f"its `Base:` line names {name!r}, which is not a plain branch to start from"
 
 
 def story_change(item: dict) -> str | None:
@@ -2778,6 +2800,10 @@ class Worker:
 
     def work_claimed(self, item: dict, repo: Repo, beat: Heartbeat) -> Outcome:
         number, display, holder = item["number"], item.get("display"), self.cfg.holder
+        if is_story(item) and (problem := story_base_problem(item)):
+            note = f"gonk worker `{holder}` hands {display} back without starting: {problem}."
+            self.release_if_ours(number, note)
+            return Outcome(NOT_HANDED_BACK, note)
         if is_story(item) and (base := story_base(item)):
             repo = dataclasses.replace(
                 repo, base=base
