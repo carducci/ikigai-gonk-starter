@@ -83,13 +83,15 @@ After a story's agent ends, however it ended, the worker MUST push a last checkp
 - **THEN** the hand-back has a `- build: FAIL` line
 
 ### Requirement: Only a passing story is done
-The worker MUST mark the story's pull request ready only when every check passes and the agent ended
-by itself, and only then hand the story back with evidence. Otherwise the pull request MUST stay a
-draft and the item MUST be released with the check lines, without evidence.
+The worker MUST hand the story back with evidence only when every check passes and the agent ended
+by itself, and its pull request MUST still be a draft then: the router reviews it and marks it ready
+after a clean review. The worker MUST NOT mark a pull request ready. Otherwise the item MUST be
+released with the check lines, without evidence.
 
 #### Scenario: Every check passes
 - **WHEN** the agent ticks every task, the change validates and the build passes
-- **THEN** the pull request is marked ready and the story is handed back with it as evidence
+- **THEN** the story is handed back with its pull request as evidence, and the pull request is
+  still a draft
 
 #### Scenario: A failing check keeps the draft
 - **WHEN** any check fails, or the agent stalled

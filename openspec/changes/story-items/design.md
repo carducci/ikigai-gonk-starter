@@ -41,8 +41,8 @@ After any ending the worker pushes a last checkpoint and runs the checks itself:
 <id> --strict`, no `- [ ]` left in `tasks.md`, the configured build command's
 `AGENT-BUILD-RESULT {json}` line saying `"status":"pass"`, and a screenshot in the evidence directory
 when the change touched a configured UI path. Each is one `- <check>: pass|FAIL <detail>` line. Only
-when all pass (and the agent ended by itself) is the pull request marked ready and the story handed
-back with evidence; otherwise the pull request stays a draft and the item is released with the
+when all pass (and the agent ended by itself) is the story handed back with evidence, its pull
+request still a draft for the router's review; otherwise the item is released with the
 lines, so nothing reaches Michael as done unless the checks pass. A build that is not configured is
 reported as `not configured` and does not pass.
 
