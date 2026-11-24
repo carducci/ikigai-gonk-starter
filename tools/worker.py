@@ -961,6 +961,24 @@ def story_problem(item: dict) -> str | None:
     return None
 
 
+STORY_BASE = re.compile(r"^Base: (\S+)[ \t]*$", re.M)
+PLAIN_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+
+
+def story_base(item: dict) -> str | None:
+    """The branch a story starts from and opens its pull request into: the `Base: <branch>` line
+    of the body the dispatch pinned. pax-explore files it; stories that build on each other share
+    one feature branch. None when there is no such line, or it names no plain branch; then the
+    repository's base holds."""
+    m = STORY_BASE.search(item.get("body") or "")
+    if not m:
+        return None
+    name = m.group(1)
+    if not PLAIN_BRANCH.fullmatch(name) or ".." in name or name.endswith(("/", ".lock")):
+        return None
+    return name
+
+
 def story_change(item: dict) -> str | None:
     """The change a story applies, or None for an item that is not a story."""
     if STORY_LABEL not in (item.get("labels") or []) or story_problem(item):
@@ -1760,6 +1778,12 @@ def make_workspace(
         resumed = f"refs/remotes/origin/{branch}"
         if git("rev-parse", "--verify", "--quiet", resumed, cwd=source).returncode == 0:
             origin = f"origin/{branch}"
+        elif git(
+            "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{repo.base}", cwd=source
+        ).returncode:
+            raise StepFailed(
+                f"its base branch {repo.base} is not on origin: the story can't start from it"
+            )
     must(
         git("worktree", "add", "--quiet", *track, new, branch, str(path), origin, cwd=source),
         "git worktree add",
@@ -2754,6 +2778,10 @@ class Worker:
 
     def work_claimed(self, item: dict, repo: Repo, beat: Heartbeat) -> Outcome:
         number, display, holder = item["number"], item.get("display"), self.cfg.holder
+        if is_story(item) and (base := story_base(item)):
+            repo = dataclasses.replace(
+                repo, base=base
+            )  # its chain's feature branch, for the whole run
         gh = GitHub(self.wc.gh, repo.github)
         stacked_on = None
         if (named := continued_pr(item, self.wc.routers)) is not None:
