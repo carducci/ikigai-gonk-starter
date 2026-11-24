@@ -21,8 +21,8 @@ it reaches Michael as done.
   nothing moves for `[story] stall` (default 30m) it stops the agent as stalled.
 - After the agent ends, however it ended, the worker checks the change: `openspec validate --strict`,
   every task ticked, the configured build reporting `AGENT-BUILD-RESULT {"status":"pass"}`, and
-  screenshots when UI paths changed. It marks the pull request ready only when every check passes,
-  and hands the story back as done only then.
+  screenshots when UI paths changed. It hands the story back as done only when every check
+  passes, with its pull request still a draft: the router reviews it and marks it ready.
 - The hand-back says the run's duration, turns, tokens and the CLI's own reported cost, as text,
   including for a run that was stopped.
 - An optional `[story]` table in the worker configuration: `stall`, `check`, `build`, `ui_globs`,

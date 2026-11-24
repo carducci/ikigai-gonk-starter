@@ -4,7 +4,8 @@ would, and does what its flags say: record its brief, sleep, edit a file, commit
 branch and "open a pull request" through the stub gh, or report evidence without one.
 
     fake_agent.py --record <dir> --gh "<argv of the stub gh>" --branch B --item N
-                  [--sleep S] [--child] [--deaf-child] [--stubborn] [--no-pr] [--draft-base B]
+                  [--sleep S] [--child] [--deaf-child] [--stubborn] [--no-pr] [--push-only]
+                  [--draft-base B]
                   [--evidence URL --report-file P] [--report TEXT] [--note TEXT]
                   [--report-hex HEX] [--confined] [--say TEXT] [--chatter TEXT] [--exit N]
                   [--change ID --tick N [--tick-every S]] [--hang] [--emit FILE] -- <prompt>
@@ -48,6 +49,7 @@ def main() -> int:
     p.add_argument("--deaf-child", action="store_true")  # the child alone ignores Ctrl+Break
     p.add_argument("--stubborn", action="store_true")  # ignore Ctrl+Break (Windows)
     p.add_argument("--no-pr", action="store_true")
+    p.add_argument("--push-only", action="store_true", help="commit and push, open no PR")
     p.add_argument("--draft-base", help="open the pull request as a draft against this branch")
     p.add_argument("--evidence")
     p.add_argument("--report-file")
@@ -127,6 +129,7 @@ def main() -> int:
         git("add", "WORKED.txt")
         git("commit", "-q", "-m", f"Work on item {args.item}")
         git("push", "-q", "origin", f"HEAD:refs/heads/{args.branch}")
+    if not args.no_pr and not args.push_only:
         gh = shlex.split(args.gh)
         stacked = ["--draft", "--base", args.draft_base] if args.draft_base else []
         subprocess.run(
