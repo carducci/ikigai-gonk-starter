@@ -798,6 +798,13 @@ the Pop!_OS 24.04 worker, `run --once`) showed, and what is still to try:
    not in the item's repository (another repository, or a fork's branch) is refused before
    the agent starts, with a note saying which, and the item is handed back. A comment by
    anyone but a router never stacks the work.
+   **The item's own pull request.** When it says `Continue PR #N on its own branch` (`draft`
+   optional), there is no new branch: the worktree is on that pull request's head branch, which
+   must be the item's own (`worker/item-<N>-<time>`, opened by an earlier run of this item), and
+   the preamble says to push there and open no pull request. That PR stays the item's one
+   evidence, so a review's fixes land on the item that was reviewed (one item per piece of work).
+   A PR on any other branch is refused before the agent starts, with a note, and the item is
+   handed back.
 5. **Agent.** The prompt is a fixed preamble (AGENTS.md's rules: reproduce first; work only
    in this worktree; a pull request with green CI; never merge, never close; the evidence
    file when it is not a defect), then the item's title and body. Its output goes to
@@ -949,7 +956,9 @@ changed since the base: when one matches a `ui_globs` pattern (`fnmatch`, where 
 directories), the evidence directory must hold at least one PNG.
 
 **Done only when every check passes.** Then, and only when the agent ended by itself, the worker
-marks the pull request ready (`gh pr ready`) and hands the story back with it as the evidence.
+hands the story back with its pull request as the evidence, still a draft: the router reviews it
+and marks it ready after a clean review. The worker never marks a pull request ready, and makes
+one an agent opened ready a draft again.
 Otherwise the pull request stays a draft, the worktree is kept, and the item is released with the
 check lines, the agent's report (a `Question for Dax:` reaches the item this way) and no evidence:
 nothing reaches the dispatcher as done unless the checks pass. Dispatched again, the story resumes
