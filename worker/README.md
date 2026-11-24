@@ -803,7 +803,14 @@ the Pop!_OS 24.04 worker, `run --once`) showed, and what is still to try:
    must be the item's own (`worker/item-<N>-<time>`, opened by an earlier run of this item), and
    the preamble says to push there and open no pull request. That PR stays the item's one
    evidence, so a review's fixes land on the item that was reviewed (one item per piece of work).
-   A PR on any other branch is refused before the agent starts, with a note, and the item is
+   Since that PR existed before the run, it is evidence of THIS run only when the agent moved
+   origin's branch past the head the worktree was cut from and exited 0, and only while the PR
+   is still open; the worker reads no other PR of the branch (an older, closed one included).
+   Otherwise the item is handed back without evidence, as a fresh task with no PR is, unless
+   the agent wrote an evidence URL to its report file. The worker pushes nothing onto the
+   branch itself: an earlier run's kept worktree is removed without a push, and any commits of
+   it that origin never got are named in the hand-back and kept on a local ref of the clone
+   (`refs/worker/dropped/item-<N>`). A PR on any other branch is refused before the agent starts, with a note, and the item is
    handed back.
 5. **Agent.** The prompt is a fixed preamble (AGENTS.md's rules: reproduce first; work only
    in this worktree; a pull request with green CI; never merge, never close; the evidence
