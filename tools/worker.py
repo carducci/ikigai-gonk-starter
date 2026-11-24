@@ -45,7 +45,9 @@ What it does with one item, in order:
    the ledger knows (0.8.0, ledger item 1199), so `next` stops offering the item to the next
    worker; the `Evidence:` prefix stays, because that is what a ledger older than 0.8.0 —
    which does not know the argument and ignores it — reads, and what the brief filters on.
-   The worker NEVER closes and NEVER merges: the dispatcher does both.
+   The worker NEVER closes and NEVER merges: the dispatcher does both. It never marks a pull
+   request ready either: what it hands back is a draft, and the router marks it ready after a
+   clean review.
 
 Each decision above that enforces a rule (a skip, a lost claim, a budget, a hand-back without
 evidence, a merge while the agent ran, a refused configuration) is a sensor of the harness and
@@ -1901,10 +1903,6 @@ class GitHub:
             "--title", title, "--body", body, cwd=cwd,
         )  # fmt: skip
 
-    def ready(self, number: int) -> subprocess.CompletedProcess:
-        """Mark a draft pull request ready for review (a story whose checks all passed)."""
-        return self.run("pr", "ready", str(number), "-R", self.slug)
-
     def make_draft(self, pr: PullRequest) -> str:
         """Undo `ready` on a worker PR (ledger item 1143); pr.draft keeps what the agent opened."""
         done = self.run("pr", "ready", str(pr.number), "-R", self.slug, "--undo")
@@ -2892,11 +2890,11 @@ class Worker:
         refused: list[str],
         cost: str = "",
     ) -> Outcome:
-        """After a story's agent, however it ended: push a last checkpoint, run the checks, and
-        mark the pull request ready only when every one passes and the agent ended by itself.
-        Only then is the story handed back with evidence; otherwise the pull request stays a
-        draft and the item is released with the check lines, so nothing is handed back as done
-        unless the checks pass."""
+        """After a story's agent, however it ended: push a last checkpoint and run the checks.
+        Only when every one passes and the agent ended by itself is the story handed back with
+        evidence, and its pull request is still a draft: the router reviews it and marks it
+        ready after a clean review. Otherwise the item is released with the check lines, so
+        nothing is handed back as done unless the checks pass."""
         number, display, holder = item["number"], item.get("display"), self.cfg.holder
         change, table = story.change, self.wc.story or load_story({}, "defaults")
         if ended == "lost":
@@ -2925,12 +2923,7 @@ class Worker:
                 f"{open_prs[0].sha[:12] or 'no commit'}: origin never got the last push."
             )
         elif passed:
-            done = gh.ready(open_prs[0].number)
-            if done.returncode == 0:
-                ready = f"Every check passed: it marked {open_prs[0].url} ready for review."
-            else:
-                passed = False
-                ready = f"Not ready: `gh pr ready` failed: {said(done)}."
+            ready = f"Every check passed: {open_prs[0].url} stays a draft, for the router's review."
         else:
             ready = "Left a draft: " + (
                 "a check did not pass." if ended == "agent" else f"the agent {ended}."
@@ -2940,9 +2933,10 @@ class Worker:
         else:
             for pr in prs:
                 gh.read_ci(pr)
-        lines = [f"Story `{change}` on {ws.branch}:", *(c.line for c in checks), ready]
+        drafted = [gh.make_draft(p) for p in open_prs if not p.draft]
+        lines = [f"Story `{change}` on {ws.branch}:", *(c.line for c in checks), ready, *drafted]
         for pr in prs:
-            draft = "" if passed or pr.state.upper() != "OPEN" else ", draft"
+            draft = ", draft" if pr.state.upper() == "OPEN" else ""
             lines.append(f"- {pr.url} ({pr.state.lower()}{draft}): CI {pr.ci}")
             if pr.state.upper() == "MERGED":
                 lines.append(merge_line(pr, exited))

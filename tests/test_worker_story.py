@@ -317,12 +317,16 @@ class TheChecks(unittest.TestCase):
     def said(self, number: int) -> str:
         return "\n".join(c["text"] for c in self.s.ledger.human_comments(number))
 
-    def test_every_check_passes_so_the_pull_request_is_ready_and_handed_back(self):
+    def test_every_check_passes_so_the_draft_is_handed_back_for_review(self):
+        # One item per piece of work: the router reviews the story's draft and marks it ready
+        # after a clean review; the worker never does (it was the router's blind spot: it
+        # reviews only drafts, so a story marked ready here was never reviewed).
         n = self.s.story()
         outcome = self.s.run("--no-pr", "--tick", "3", story=self.s.build("pass"))
         self.assertEqual(outcome.code, worker.HANDED_BACK, outcome.summary)
         pr = self.draft()
-        self.assertFalse(pr["isDraft"])
+        self.assertTrue(pr["isDraft"])
+        self.assertNotIn(["pr", "ready"], [c[:2] for c in self.s.rig.gh()["calls"]])
         said = self.said(n)
         self.assertTrue(said.startswith(f"Evidence: {pr['url']}\n"), said)
         for line in (
@@ -330,7 +334,7 @@ class TheChecks(unittest.TestCase):
             "- tasks: pass all 3 tasks ticked",
             "- build: pass",
             "- screenshots: pass not required (no [story] ui_globs)",
-            "Every check passed: it marked",
+            f"Every check passed: {pr['url']} stays a draft, for the router's review.",
         ):
             self.assertIn(line, said)
         item = self.s.ledger.items[n]
