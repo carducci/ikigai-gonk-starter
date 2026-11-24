@@ -34,6 +34,9 @@ What it does with one item, in order:
    must be under this account's own home), `<work root>/<repo>/item-<N>`. When the brief says
    `Continue draft PR #N` (`continued_pr`), it is branched from that open PR's head instead,
    and the agent opens a draft against that branch: a stacked PR, the evidence as any other.
+   When it says `Continue PR #N on its own branch`, the worktree is ON that PR's branch, which
+   must be this item's own (`worker/item-<N>-…`): the agent pushes there and opens no PR, and
+   that PR stays the item's one evidence (one item per piece of work: its fixes land on it).
 4. The agent, from the configured command template, with the item as its brief behind a fixed
    preamble; stopped when the wall-clock budget runs out. The title and body are the task (the
    dispatch pinned them); the comments follow as quoted blocks, each under its author, and
@@ -807,12 +810,17 @@ def edited_dispatch(
     return newest
 
 
-CONTINUE_PR = re.compile(r"\bContinue draft PR (?:([A-Za-z0-9-]+/[A-Za-z0-9._-]+))?#(\d+)\b")
+CONTINUE_PR = re.compile(
+    r"\bContinue (?P<draft>draft )?PR (?:(?P<owner>[A-Za-z0-9-]+/[A-Za-z0-9._-]+))?#(?P<n>\d+)"
+    r"(?P<own> on its own branch)?\b"
+)
 
 
-def continued_pr(item: dict, routers: list[str]) -> tuple[str | None, int] | None:
-    """(owner/name or None, number) of the pull request the brief says to continue with
-    `Continue draft PR #N` (or `owner/name#N`), or None. Read from what the newest dispatch
+def continued_pr(item: dict, routers: list[str]) -> tuple[str | None, int, bool] | None:
+    """(owner/name or None, number, own) of the pull request the brief says to continue with
+    `Continue draft PR #N` (or `owner/name#N`), or None. `own` is True when it says
+    `Continue PR #N on its own branch` (`draft` optional): the work goes onto that PR's branch,
+    not a stacked PR. Read from what the newest dispatch
     stands behind: the title and body it pinned, then the routers' comments from that dispatch
     on, oldest first, the newest naming one winning. A router's note older than that dispatch
     never outranks it, and a comment by anyone else is data, and never stacks the work."""
@@ -829,8 +837,18 @@ def continued_pr(item: dict, routers: list[str]) -> tuple[str | None, int] | Non
     found = None
     for text in texts:
         for m in CONTINUE_PR.finditer(text):
-            found = (m.group(1), int(m.group(2)))
+            if m["draft"] or m["own"]:
+                found = (m["owner"], int(m["n"]), bool(m["own"]))
     return found
+
+
+def own_problem(pr: dict, number: int) -> str | None:
+    """Why the worker may not push onto this pull request's branch for item `number`, or None:
+    the branch must be the item's own, one a worker opened for it (`worker/item-<N>-<stamp>`)."""
+    branch = pr.get("headRefName") or ""
+    if re.fullmatch(rf"worker/item-{number}(?:\.\d+)?-\d{{8}}T\d{{6}}", branch):
+        return None
+    return f"its branch {branch} is not this item's own branch (worker/item-{number}-…)"
 
 
 def stack_problem(pr: dict | None, err: str | None, slug: str, named: str | None) -> str | None:
@@ -1643,7 +1661,12 @@ class Workspace:
 
 
 def make_workspace(
-    root: Path, repo: Repo, number: int, start: str | None = None, story: str | None = None
+    root: Path,
+    repo: Repo,
+    number: int,
+    start: str | None = None,
+    story: str | None = None,
+    own: bool = False,
 ) -> Workspace:
     """A fresh worktree of `origin/<start>` (by default `origin/<base>`) at
     `<root>/<repo>/item-<N>`, from one clone per repository (`.source`, fetched before each
@@ -1654,7 +1677,9 @@ def make_workspace(
     from origin's `story/<id>` when there is one (a later run resumes the story) and from
     `origin/<base>` when not; and the item's own kept worktrees are removed first, after a push
     of their HEAD that is never forced, since `git worktree add` refuses a branch checked out in
-    another worktree. The caller holds the clone lock."""
+    another worktree. With `own`, the worktree is on `start` itself, a pull request's branch that
+    is the item's own, cut from origin's and never tracking it; the item's kept worktrees are
+    removed first, as for a story. The caller holds the clone lock."""
     home = root / repo.name
     home.mkdir(parents=True, exist_ok=True)
     source = home / ".source"
@@ -1667,7 +1692,7 @@ def make_workspace(
                 f"{source} is a clone of {url}, and the configuration says {repo.remote}: "
                 "move it aside, and the next item clones afresh"
             )
-        if story is not None:
+        if story is not None or own:
             drop_own_trees(home, number)
     must(git("fetch", "--prune", "--quiet", "origin", cwd=source), "git fetch")
     name, k = f"item-{number}", 1
@@ -1682,6 +1707,8 @@ def make_workspace(
     track = ["--no-track"] if start else []
     origin = f"origin/{start or repo.base}"
     new = "-b"
+    if own and start:
+        branch, new = start, "-B"  # the PR's own branch: the agent pushes to it, never forced
     if story is not None:
         # A story's branch is its own (story/<id>), and never tracks: the worker pushes it.
         branch, new, track, origin = f"story/{story}", "-B", ["--no-track"], f"origin/{repo.base}"
@@ -2009,6 +2036,17 @@ The item, {display} on the ledger `{ledger}`:
 """
 
 
+ONE_PR_RULE = """\
+4. Every change through a pull request with green CI: commit, push this branch
+   (`git push -u origin {branch}`), open ONE pull request against {base} with {pr_create},
+   and see its CI to green, fixing what fails."""
+assert ONE_PR_RULE in PREAMBLE
+OWN_PR_RULE = """\
+4. Every change through this item's own pull request, {pr_url}, with green CI: commit, push
+   this branch (`git push origin {branch}`, never forced), and open NO new pull request: your
+   pushes update that one, which stays a draft. See its CI to green, fixing what fails."""
+
+
 STORY_PREAMBLE = """\
 You are an unattended builder. A gonk ledger item, a STORY, was claimed for you by the worker
 loop, which renews its lease while you run, checkpoints your branch, and hands the item back
@@ -2177,7 +2215,11 @@ def brief(
     was cut from that PR's head, and the agent opens a draft against it. A story (by its labels)
     gets the story preamble; `story` is the loop's [story] table, read only for one."""
     base, pr_create = repo.base, "`gh pr create --draft`"
-    if stacked_on:
+    preamble = PREAMBLE
+    if stacked_on and stacked_on.get("own"):
+        base = stacked_on["headRefName"]
+        preamble = PREAMBLE.replace(ONE_PR_RULE, OWN_PR_RULE)
+    elif stacked_on:
         base = stacked_on["headRefName"]
         pr_create = (
             f"`gh pr create --draft --base {shlex.quote(base)}` (a stacked draft: this item "
@@ -2192,8 +2234,8 @@ def brief(
         "{base}": base,
         "{budget}": spoken(budget),
         "{ledger}": ledger,
+        "{pr_url}": (stacked_on or {}).get("url") or "",
     }
-    preamble = PREAMBLE
     change = story_change(item)
     if change:
         story = story or load_story({}, "defaults")
@@ -2637,20 +2679,29 @@ class Worker:
         gh = GitHub(self.wc.gh, repo.github)
         stacked_on = None
         if (named := continued_pr(item, self.wc.routers)) is not None:
-            owner, pr_number = named
+            owner, pr_number, own = named
             elsewhere = owner and owner.lower() != repo.github.lower()
             stacked_on, err = (None, None) if elsewhere else gh.pull_request(pr_number)
             problem = stack_problem(stacked_on, err, repo.github, owner)
+            if not problem and own:
+                problem = own_problem(stacked_on, number)
+                stacked_on = {**stacked_on, "own": True}
             if problem:
+                what = (
+                    f"PR {owner or ''}#{pr_number} on its own branch"
+                    if own
+                    else f"draft PR {owner or ''}#{pr_number}"
+                )
                 note = (
                     f"gonk worker `{holder}` hands {display} back without starting: its brief "
-                    f"says to continue draft PR {owner or ''}#{pr_number}, and {problem}."
+                    f"says to continue {what}, and {problem}."
                 )
                 self.release_if_ours(number, note)
                 return Outcome(NOT_HANDED_BACK, note)
         start = stacked_on["headRefName"] if stacked_on else None
         with CloneLock(self.wc.state_dir, repo.name):
-            ws = make_workspace(self.root, repo, number, start, story_change(item))
+            own = bool(stacked_on and stacked_on.get("own"))
+            ws = make_workspace(self.root, repo, number, start, story_change(item), own)
             prepared = run_prepare(repo, ws, self.shutdown, beat, self.wc.grace)
         if prepared:
             kind, failed = prepared
@@ -2839,7 +2890,10 @@ class Worker:
             f"gonk worker `{holder}` handed this back: {agent}. It never closes and never "
             "merges; the dispatcher does both, after checking this evidence.",
         ]
-        if stacked_on:
+        if stacked_on and stacked_on.get("own"):
+            own_pr = stacked_on["url"]
+            body += ["", f"Its work is on {start}, the branch of {own_pr}, this item's own."]
+        elif stacked_on:
             body += ["", stack_line(stacked_on, start, prs[0] if prs else None)]
         if review_lines:
             body += ["", *review_lines]
