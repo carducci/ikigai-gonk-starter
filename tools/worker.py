@@ -2679,7 +2679,8 @@ class Worker:
                 f"`worker.py forget {item['number']}` to allow it again"
             )
         sibling = sibling_hand_back(
-            item, self.wc.routers, self.cfg.ledger, self.wc.state_dir, self.attempts.path
+            item, self.wc.routers, self.cfg.ledger, self.wc.state_dir, self.attempts.path,
+            self.wc.sibling_state_dirs,
         )
         if sibling and sibling[1] is not None:
             return gonk.sensor("worker-skips-handed-back"), (
