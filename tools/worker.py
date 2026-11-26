@@ -1893,6 +1893,47 @@ def drop_own_trees(home: Path, number: int, push: bool = True) -> list[str]:
     return dropped
 
 
+STALE_TREE_AGE = 24 * 3600  # seconds: a tree older than this, of an item nobody holds, is left over
+
+
+def sweep_stale_trees(home: Path, number: int, held: set[int], now: float | None = None) -> list[str]:
+    """Remove what killed runs left in this repository's work dir (carducci#1858): the worktrees of
+    OTHER items that nobody holds a claim on and that haven't changed for a day, and the clone's
+    local review/ branches that no worktree has checked out. Nothing is lost: a tree's unpushed
+    commits go to `refs/worker/dropped/<tree>` (as drop_own_trees does), and a review branch whose
+    tip origin lacks goes to `refs/worker/dropped/<branch>` first. Without that, push_review_branches
+    pushed a dead run's review/pr-<n> along with the next review's (carducci#1399), and the next
+    review of the same PR found the branch taken. The caller holds the clone lock. Returns a line
+    per thing removed, for the log."""
+    source = home / ".source"
+    if not (source / ".git").exists():
+        return []
+    now = time.time() if now is None else now
+    lines: list[str] = []
+    stale = sorted({
+        int(m.group(1))
+        for tree in home.iterdir()
+        if (m := TREE_NAME.match(tree.name)) and tree.is_dir() and not tree.is_symlink()
+        and int(m.group(1)) != number and int(m.group(1)) not in held
+        and now - tree.stat().st_mtime > STALE_TREE_AGE
+    })  # fmt: skip
+    for n in stale:
+        lines += drop_own_trees(home, n, push=False)
+        lines.append(f"swept the left-over worktree(s) of item {n} (unclaimed, unchanged for a day)")
+    out = git("worktree", "list", "--porcelain", cwd=source).stdout
+    used = {ln.split(" ", 1)[1] for ln in out.splitlines() if ln.startswith("branch ")}
+    refs = git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/review/", cwd=source)
+    for ref, tip in (ln.split() for ln in refs.stdout.splitlines() if ln.strip()):
+        if ref in used:
+            continue
+        name = ref[len("refs/heads/"):]
+        if not git("branch", "-r", "--contains", tip, cwd=source).stdout.strip():
+            git("update-ref", f"refs/worker/dropped/{name.replace('/', '-')}", tip, cwd=source)
+        git("branch", "-D", name, cwd=source)
+        lines.append(f"swept the stale local branch {name} (no worktree has it; its tip is kept on a ref)")
+    return lines
+
+
 def exclude_state(path: Path) -> None:
     """Keep `.gonk/state/`, the report's directory, out of every commit, whatever the target
     repository's .gitignore says: one line, added once, to the exclude file git names."""
