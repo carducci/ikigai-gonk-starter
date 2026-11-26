@@ -1,4 +1,4 @@
-"""The sweep of left-over worktrees and review branches before an item (carducci#1858, carducci#1829)."""
+"""The sweep of left-over worktrees and review branches (carducci#1858, carducci#1829)."""
 
 from __future__ import annotations
 
@@ -39,7 +39,16 @@ class Sweep(unittest.TestCase):
 
     def tree(self, n, age_hours, commit=False, review=None):
         path = self.home / f"item-{n}"
-        git("worktree", "add", "-q", "-b", f"worker/item-{n}-x", str(path), "origin/main", cwd=self.source)
+        git(
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            f"worker/item-{n}-x",
+            str(path),
+            "origin/main",
+            cwd=self.source,
+        )
         if commit:
             (path / "w.txt").write_text("unpushed\n")
             git("add", "w.txt", cwd=path)
@@ -55,7 +64,8 @@ class Sweep(unittest.TestCase):
         tip = git("rev-parse", "HEAD", cwd=old).stdout.strip()
         lines = worker.sweep_stale_trees(self.home, 9, held=set())
         self.assertFalse(old.exists())
-        self.assertTrue(git("for-each-ref", "--contains", tip, "refs/worker/dropped/", cwd=self.source).stdout.strip())
+        kept = git("for-each-ref", "--contains", tip, "refs/worker/dropped/", cwd=self.source)
+        self.assertTrue(kept.stdout.strip())
         self.assertTrue(any("item 5" in ln for ln in lines))
 
     def test_a_held_tree_a_young_tree_and_the_current_item_stay(self):
@@ -68,8 +78,10 @@ class Sweep(unittest.TestCase):
         git("checkout", "-q", "-b", "review/pr-8", cwd=live)
         git("branch", "review/pr-539", "origin/main", cwd=self.source)  # a dead run's, on no tree
         worker.sweep_stale_trees(self.home, 9, held={8})
-        heads = git("for-each-ref", "--format=%(refname:short)", "refs/heads/review/", cwd=self.source).stdout.split()
-        self.assertEqual(["review/pr-8"], heads)
+        heads = git(
+            "for-each-ref", "--format=%(refname:short)", "refs/heads/review/", cwd=self.source
+        )
+        self.assertEqual(["review/pr-8"], heads.stdout.split())
 
     def test_no_clone_yet_sweeps_nothing(self):
         self.assertEqual([], worker.sweep_stale_trees(self.home.parent / "none", 1, held=set()))
@@ -79,15 +91,19 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class SiblingsInOtherCheckouts(unittest.TestCase):  # carducci#1829: the spoke's loops each have a checkout
+# carducci#1829: the spoke's loops each have a checkout
+class SiblingsInOtherCheckouts(unittest.TestCase):
     def test_a_hand_back_recorded_in_another_checkouts_state_dir_is_seen(self):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
         mine, theirs = Path(d.name) / "a" / "state", Path(d.name) / "b" / "state"
         (theirs / "win-sonnet-mago-2").mkdir(parents=True)
         mine.mkdir(parents=True)
-        dispatch = {"text": "Dispatch: worker:windows agent:claude-sonnet repo:lib\nbrief: sha256:00",
-                    "author": "urn:iki:gonk:passkey:dispatcher-test", "time": "2026-11-23T20:00:00.000Z"}
+        dispatch = {
+            "text": "Dispatch: worker:windows agent:claude-sonnet repo:lib\nbrief: sha256:00",
+            "author": "urn:iki:gonk:passkey:dispatcher-test",
+            "time": "2026-11-23T20:00:00.000Z",
+        }
         item = {"number": 7, "comments": [dispatch]}
         worker.Attempts(theirs / "win-sonnet-mago-2").record("acme", 7, "handed back")
         routers = ["urn:iki:gonk:passkey:dispatcher-test"]
