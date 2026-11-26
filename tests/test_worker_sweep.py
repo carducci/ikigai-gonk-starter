@@ -77,3 +77,22 @@ class Sweep(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SiblingsInOtherCheckouts(unittest.TestCase):  # carducci#1829: the spoke's loops each have a checkout
+    def test_a_hand_back_recorded_in_another_checkouts_state_dir_is_seen(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        mine, theirs = Path(d.name) / "a" / "state", Path(d.name) / "b" / "state"
+        (theirs / "win-sonnet-mago-2").mkdir(parents=True)
+        mine.mkdir(parents=True)
+        dispatch = {"text": "Dispatch: worker:windows agent:claude-sonnet repo:lib\nbrief: sha256:00",
+                    "author": "urn:iki:gonk:passkey:dispatcher-test", "time": "2026-11-23T20:00:00.000Z"}
+        item = {"number": 7, "comments": [dispatch]}
+        worker.Attempts(theirs / "win-sonnet-mago-2").record("acme", 7, "handed back")
+        routers = ["urn:iki:gonk:passkey:dispatcher-test"]
+        own = mine / "attempts.json"
+        self.assertIsNone(worker.sibling_hand_back(item, routers, "acme", mine, own))
+        seen = worker.sibling_hand_back(item, routers, "acme", mine, own, extra=(theirs,))
+        self.assertIsNotNone(seen)
+        self.assertIn("win-sonnet-mago-2", seen[0])

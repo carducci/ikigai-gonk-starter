@@ -1401,9 +1401,11 @@ class Attempts:
         return True
 
 
-def attempt_files(state_dir: Path) -> list[Path]:
-    """Every loop's attempts.json of a checkout: the unnamed loop's, then one per named loop."""
-    return [state_dir / "attempts.json", *sorted(state_dir.glob("*/attempts.json"))]
+def attempt_files(state_dir: Path, extra: tuple = ()) -> list[Path]:
+    """Every loop's attempts.json of a checkout: the unnamed loop's, then one per named loop; then the
+    same for each `extra` state dir, another checkout's (sibling_state_dirs: the spoke's loops each
+    have their own checkout, so without them a loop never saw a sibling's hand-back, carducci#1829)."""
+    return [f for d in (state_dir, *extra) for f in (d / "attempts.json", *sorted(d.glob("*/attempts.json")))]
 
 
 def forget_everywhere(
@@ -1429,7 +1431,7 @@ def forget_everywhere(
 
 
 def sibling_hand_back(
-    item: dict, routers: list[str], ledger: str, state_dir: Path, own: Path
+    item: dict, routers: list[str], ledger: str, state_dir: Path, own: Path, extra: tuple = ()
 ) -> tuple[str, Path | None, str] | None:
     """(who, unreadable file or None, when) of a SIBLING loop's hand-back since the item's newest
     router dispatch, else None.
@@ -1443,7 +1445,7 @@ def sibling_hand_back(
         for c in item.get("comments") or []
     ):
         return None
-    for f in attempt_files(state_dir):
+    for f in attempt_files(state_dir, extra):
         if f == own:
             continue
         try:
