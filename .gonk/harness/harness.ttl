@@ -528,6 +528,15 @@ ctl:worker-merged-before-exit a harness:Control ;
     harness:statedBy guide:worker-never-closes-or-merges ;
     harness:firedBy test:test_harness:SensorsFire.test_worker_merged_before_exit .
 
+# ── commit-notation (profiles/harness/commit-notation.ttl)
+
+guide:commit-notation a harness:Guide ;
+    rdfs:label "commit in Arlo's Commit Notation" ;
+    rdfs:comment "Every commit's first line starts `<risk> <intention> ` then the summary: risk from what you actually verified (`.` proven safe, `^` validated, `!` risky, `@` broken), exactly one intention per commit (uppercase changes behaviour, lowercase changes none), and microcommits." ;
+    harness:statedIn "AGENTS.md" ; harness:section "Commit in Arlo's Commit Notation" ;
+    harness:direction harness:feedforward ; harness:execution harness:inferential ;
+    harness:stage harness:toolCall ; harness:category harness:maintainability .
+
 # ── claude-hook (profiles/harness/claude-hook.ttl)
 
 ctl:edit-without-live-claim a harness:Control ;
