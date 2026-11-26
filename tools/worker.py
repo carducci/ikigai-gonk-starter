@@ -2726,6 +2726,16 @@ class Worker:
                 held.append(f"{other.get('display')} is claimed by `{holder}`")
         return ", ".join(held) if len(held) >= self.wc.max_per_repo else None
 
+    def sweep(self, repo: Repo, number: int) -> list[str]:
+        """sweep_stale_trees for this repository, sparing every item with an active claim. When the
+        claims can't be read, nothing is swept."""
+        items, _ = self.ledger.items(f"repo:{repo.name}")
+        if items is None:
+            return []
+        now = datetime.now(UTC)
+        held = {it.get("number") for it in items if active_claim(it, now)}
+        return sweep_stale_trees(self.root / repo.name, number, held)
+
     def per_repo(self, kind: str = "other") -> str:
         n = self.wc.max_per_repo
         of = {"story": " (counting stories only)", "review": " (counting reviews only)"}
