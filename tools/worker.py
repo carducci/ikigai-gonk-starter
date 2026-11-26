@@ -634,7 +634,12 @@ class Ledger:
     def items(self, label: str):
         command = f"source {self.cfg.resource('items')} labels={label} limit=0 as=application/json"
         doc, err = self._json(command)
-        return (doc.get("items", []) if doc else None), err
+        if doc is None:
+            return None, err
+        listed = doc.get("items") if isinstance(doc, dict) else None
+        if not isinstance(listed, list):  # an answer that names no list is not an empty one
+            return None, "the items answer has no `items` list"
+        return listed, err
 
     def item(self, number: int):
         doc, err = self._json(f"source {self.cfg.resource(f'item:{number}')} as=application/json")
@@ -1842,7 +1847,20 @@ def make_workspace(
 TREE_NAME = re.compile(r"^item-(\d+)(?:\.\d+)?\Z")
 
 
-def drop_own_trees(home: Path, number: int, push: bool = True) -> list[str]:
+def unused_dropped_ref(source: Path, name: str) -> str:
+    """`refs/worker/dropped/<name>`, or the first `<name>-<k>` no ref holds yet: an earlier
+    drop's ref is never moved, or its commits would reach no ref."""
+    ref = f"refs/worker/dropped/{name}"
+    k = 1
+    while git("rev-parse", "--verify", "--quiet", ref, cwd=source).returncode == 0:
+        k += 1
+        ref = f"refs/worker/dropped/{name}-{k}"
+    return ref
+
+
+def drop_own_trees(
+    home: Path, number: int, push: bool = True, unchanged_since: float | None = None
+) -> list[str]:
     """Remove the worktrees an earlier run of item `number` kept under `home` (`item-<N>` and
     `item-<N>.<k>`), for a story about to start again. The caller holds the clone lock and the
     item's claim, so no agent is in one. A story's HEAD is pushed to its branch first, never
@@ -1851,11 +1869,14 @@ def drop_own_trees(home: Path, number: int, push: bool = True) -> list[str]:
     With `push` False (an item continuing its PR's own branch) nothing is pushed: no agent of
     this run made a kept tree's commits, so they never reach the PR. Its commits origin lacks
     are kept on a local ref of the clone, `refs/worker/dropped/<tree>`, and named in the lines
-    this returns, for the hand-back."""
+    this returns, for the hand-back. With `unchanged_since` (a time), only trees not changed
+    since then go: a younger tree of the same item stays."""
     dropped: list[str] = []
     for tree in sorted(home.iterdir()):
         m = TREE_NAME.match(tree.name)
         if not m or int(m.group(1)) != number or tree.is_symlink() or not tree.is_dir():
+            continue
+        if unchanged_since is not None and tree.stat().st_mtime > unchanged_since:
             continue
         if not (tree / ".git").is_file():
             continue
@@ -1872,14 +1893,7 @@ def drop_own_trees(home: Path, number: int, push: bool = True) -> list[str]:
                 log(f"could not list {tree}'s unpushed commits: {said(unpushed)}; the tree is kept")
                 continue
             if commits:
-                ref = f"refs/worker/dropped/{tree.name}"
-                k = 1
-                while (
-                    git("rev-parse", "--verify", "--quiet", ref, cwd=home / ".source").returncode
-                    == 0
-                ):  # an earlier drop's ref is never moved: its commits would reach no ref
-                    k += 1
-                    ref = f"refs/worker/dropped/{tree.name}-{k}"
+                ref = unused_dropped_ref(home / ".source", tree.name)
                 git("update-ref", ref, commits[0], cwd=home / ".source")
                 dropped.append(
                     f"- The worker pushed nothing before the agent: an earlier run's kept "
@@ -1935,7 +1949,7 @@ def sweep_stale_trees(
         and now - tree.stat().st_mtime > STALE_TREE_AGE
     })  # fmt: skip
     for n in stale:
-        lines += drop_own_trees(home, n, push=False)
+        lines += drop_own_trees(home, n, push=False, unchanged_since=now - STALE_TREE_AGE)
         lines.append(
             f"swept the left-over worktree(s) of item {n} (unclaimed, unchanged for a day)"
         )
@@ -1949,7 +1963,8 @@ def sweep_stale_trees(
             continue
         name = ref[len("refs/heads/") :]
         if not git("branch", "-r", "--contains", tip, cwd=source).stdout.strip():
-            git("update-ref", f"refs/worker/dropped/{name.replace('/', '-')}", tip, cwd=source)
+            keep = unused_dropped_ref(source, name.replace("/", "-"))
+            git("update-ref", keep, tip, cwd=source)
         git("branch", "-D", name, cwd=source)
         lines.append(
             f"swept the stale local branch {name} (no worktree has it; its tip is kept on a ref)"
