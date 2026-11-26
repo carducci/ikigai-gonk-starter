@@ -234,7 +234,7 @@ class WorkerConfig:
     cert_dir: str | None = None  # overrides .gonk/local.toml's QUIC client bundle (carducci#563)
     max_per_repo: int = 1  # items of one repository at once, on the ledger and on this machine
     idle_holders: tuple = ()  # claim holders that fence no repository (a router's hold)
-    sibling_state_dirs: tuple = ()  # other checkouts' state dirs whose loops are siblings (the spoke)
+    sibling_state_dirs: tuple = ()  # other checkouts' state dirs whose loops are siblings
     story: dict = field(default_factory=dict)  # the [story] table: see load_story
 
     def __post_init__(self) -> None:
@@ -482,7 +482,9 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
 
     sibs = t.get("sibling_state_dirs", [])
     if not isinstance(sibs, list) or not all(isinstance(s, str) and s for s in sibs):
-        raise gonk.ConfigError(f"{where}: sibling_state_dirs is a list of other checkouts' state dirs")
+        raise gonk.ConfigError(
+            f"{where}: sibling_state_dirs is a list of other checkouts' state dirs"
+        )
     idle = t.get("idle_holders", [])
     if not isinstance(idle, list) or not all(isinstance(h, str) and h for h in idle):
         raise gonk.ConfigError(f"{where}: idle_holders is a list of claim holders, fencing nothing")
@@ -1407,10 +1409,15 @@ class Attempts:
 
 
 def attempt_files(state_dir: Path, extra: tuple = ()) -> list[Path]:
-    """Every loop's attempts.json of a checkout: the unnamed loop's, then one per named loop; then the
-    same for each `extra` state dir, another checkout's (sibling_state_dirs: the spoke's loops each
-    have their own checkout, so without them a loop never saw a sibling's hand-back, carducci#1829)."""
-    return [f for d in (state_dir, *extra) for f in (d / "attempts.json", *sorted(d.glob("*/attempts.json")))]
+    """Every loop's attempts.json of a checkout: the unnamed loop's, then one per named loop;
+    then the same for each `extra` state dir, another checkout's (sibling_state_dirs: the
+    spoke's loops each have their own checkout, so without them a loop never saw a sibling's
+    hand-back, carducci#1829)."""
+    return [
+        f
+        for d in (state_dir, *extra)
+        for f in (d / "attempts.json", *sorted(d.glob("*/attempts.json")))
+    ]
 
 
 def forget_everywhere(
@@ -1903,12 +1910,15 @@ def drop_own_trees(home: Path, number: int, push: bool = True) -> list[str]:
 STALE_TREE_AGE = 24 * 3600  # seconds: a tree older than this, of an item nobody holds, is left over
 
 
-def sweep_stale_trees(home: Path, number: int, held: set[int], now: float | None = None) -> list[str]:
+def sweep_stale_trees(
+    home: Path, number: int, held: set[int], now: float | None = None
+) -> list[str]:
     """Remove what killed runs left in this repository's work dir (carducci#1858): the worktrees of
     OTHER items that nobody holds a claim on and that haven't changed for a day, and the clone's
     local review/ branches that no worktree has checked out. Nothing is lost: a tree's unpushed
     commits go to `refs/worker/dropped/<tree>` (as drop_own_trees does), and a review branch whose
-    tip origin lacks goes to `refs/worker/dropped/<branch>` first. Without that, push_review_branches
+    tip origin lacks goes to `refs/worker/dropped/<branch>` first. Without that,
+    push_review_branches
     pushed a dead run's review/pr-<n> along with the next review's (carducci#1399), and the next
     review of the same PR found the branch taken. The caller holds the clone lock. Returns a line
     per thing removed, for the log."""
@@ -1926,18 +1936,24 @@ def sweep_stale_trees(home: Path, number: int, held: set[int], now: float | None
     })  # fmt: skip
     for n in stale:
         lines += drop_own_trees(home, n, push=False)
-        lines.append(f"swept the left-over worktree(s) of item {n} (unclaimed, unchanged for a day)")
+        lines.append(
+            f"swept the left-over worktree(s) of item {n} (unclaimed, unchanged for a day)"
+        )
     out = git("worktree", "list", "--porcelain", cwd=source).stdout
     used = {ln.split(" ", 1)[1] for ln in out.splitlines() if ln.startswith("branch ")}
-    refs = git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/review/", cwd=source)
+    refs = git(
+        "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/review/", cwd=source
+    )
     for ref, tip in (ln.split() for ln in refs.stdout.splitlines() if ln.strip()):
         if ref in used:
             continue
-        name = ref[len("refs/heads/"):]
+        name = ref[len("refs/heads/") :]
         if not git("branch", "-r", "--contains", tip, cwd=source).stdout.strip():
             git("update-ref", f"refs/worker/dropped/{name.replace('/', '-')}", tip, cwd=source)
         git("branch", "-D", name, cwd=source)
-        lines.append(f"swept the stale local branch {name} (no worktree has it; its tip is kept on a ref)")
+        lines.append(
+            f"swept the stale local branch {name} (no worktree has it; its tip is kept on a ref)"
+        )
     return lines
 
 
@@ -2679,7 +2695,11 @@ class Worker:
                 f"`worker.py forget {item['number']}` to allow it again"
             )
         sibling = sibling_hand_back(
-            item, self.wc.routers, self.cfg.ledger, self.wc.state_dir, self.attempts.path,
+            item,
+            self.wc.routers,
+            self.cfg.ledger,
+            self.wc.state_dir,
+            self.attempts.path,
             self.wc.sibling_state_dirs,
         )
         if sibling and sibling[1] is not None:
@@ -3655,7 +3675,10 @@ def cmd_plan(args, make_ikigai, home) -> int:
 def cmd_forget(args, make_ikigai, home) -> int:
     worker = build(args, make_ikigai, home)
     cleared, unreadable = forget_everywhere(
-        worker.wc.state_dir, worker.cfg.ledger, args.item, worker.attempts.path,
+        worker.wc.state_dir,
+        worker.cfg.ledger,
+        args.item,
+        worker.attempts.path,
         worker.wc.sibling_state_dirs,
     )
     if cleared:
