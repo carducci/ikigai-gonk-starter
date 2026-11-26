@@ -2884,6 +2884,8 @@ class Worker:
         start = stacked_on["headRefName"] if stacked_on else None
         with CloneLock(self.wc.state_dir, repo.name):
             own = bool(stacked_on and stacked_on.get("own"))
+            for line in self.sweep(repo, number):
+                log(line)
             ws = make_workspace(self.root, repo, number, start, story_change(item), own)
             prepared = run_prepare(repo, ws, self.shutdown, beat, self.wc.grace)
         if prepared:
