@@ -1414,12 +1414,12 @@ def attempt_files(state_dir: Path, extra: tuple = ()) -> list[Path]:
 
 
 def forget_everywhere(
-    state_dir: Path, ledger: str, number: int, own: Path | None = None
+    state_dir: Path, ledger: str, number: int, own: Path | None = None, extra: tuple = ()
 ) -> tuple[list[Path], list[Path]]:
     """Clear `<ledger>#<number>` from every attempts.json of the checkout: this loop's own file
     (`own`) first, then the siblings'. Returns (the files it cleared, the files it could not
     read). A file that will not parse is left untouched and the sweep goes on."""
-    files = attempt_files(state_dir)
+    files = attempt_files(state_dir, extra)
     if own is not None:
         files = [own, *(f for f in files if f != own)]
     cleared: list[Path] = []
@@ -3655,7 +3655,8 @@ def cmd_plan(args, make_ikigai, home) -> int:
 def cmd_forget(args, make_ikigai, home) -> int:
     worker = build(args, make_ikigai, home)
     cleared, unreadable = forget_everywhere(
-        worker.wc.state_dir, worker.cfg.ledger, args.item, worker.attempts.path
+        worker.wc.state_dir, worker.cfg.ledger, args.item, worker.attempts.path,
+        worker.wc.sibling_state_dirs,
     )
     if cleared:
         files = ", ".join(str(f) for f in cleared)
