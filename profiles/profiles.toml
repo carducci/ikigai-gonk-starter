@@ -35,6 +35,7 @@ sections = [
     "hub",
     "review-every-commit",
     "audits",
+    "commit-notation",
     "claude-hook",
 ]
 
@@ -52,6 +53,7 @@ sections = [
     "accessibility",
     "layout",
     "building-ikigai-style",
+    "commit-notation",
     "claude-hook",
 ]
 # The optional Claude Code hook that refuses an edit without a claim (hooks/claude/). Every
