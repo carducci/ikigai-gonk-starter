@@ -1947,7 +1947,7 @@ def sweep_stale_trees(
     for ref, tip in (ln.split() for ln in refs.stdout.splitlines() if ln.strip()):
         if ref in used:
             continue
-        name = ref[len("refs/heads/"):]
+        name = ref[len("refs/heads/") :]
         if not git("branch", "-r", "--contains", tip, cwd=source).stdout.strip():
             git("update-ref", f"refs/worker/dropped/{name.replace('/', '-')}", tip, cwd=source)
         git("branch", "-D", name, cwd=source)
@@ -2695,7 +2695,11 @@ class Worker:
                 f"`worker.py forget {item['number']}` to allow it again"
             )
         sibling = sibling_hand_back(
-            item, self.wc.routers, self.cfg.ledger, self.wc.state_dir, self.attempts.path,
+            item,
+            self.wc.routers,
+            self.cfg.ledger,
+            self.wc.state_dir,
+            self.attempts.path,
             self.wc.sibling_state_dirs,
         )
         if sibling and sibling[1] is not None:
@@ -3671,7 +3675,10 @@ def cmd_plan(args, make_ikigai, home) -> int:
 def cmd_forget(args, make_ikigai, home) -> int:
     worker = build(args, make_ikigai, home)
     cleared, unreadable = forget_everywhere(
-        worker.wc.state_dir, worker.cfg.ledger, args.item, worker.attempts.path,
+        worker.wc.state_dir,
+        worker.cfg.ledger,
+        args.item,
+        worker.attempts.path,
         worker.wc.sibling_state_dirs,
     )
     if cleared:
