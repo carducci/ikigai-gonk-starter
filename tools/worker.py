@@ -234,6 +234,7 @@ class WorkerConfig:
     cert_dir: str | None = None  # overrides .gonk/local.toml's QUIC client bundle (carducci#563)
     max_per_repo: int = 1  # items of one repository at once, on the ledger and on this machine
     idle_holders: tuple = ()  # claim holders that fence no repository (a router's hold)
+    sibling_state_dirs: tuple = ()  # other checkouts' state dirs whose loops are siblings (the spoke)
     story: dict = field(default_factory=dict)  # the [story] table: see load_story
 
     def __post_init__(self) -> None:
@@ -479,6 +480,9 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
             "repository this checkout's loops may work at once"
         )
 
+    sibs = t.get("sibling_state_dirs", [])
+    if not isinstance(sibs, list) or not all(isinstance(s, str) and s for s in sibs):
+        raise gonk.ConfigError(f"{where}: sibling_state_dirs is a list of other checkouts' state dirs")
     idle = t.get("idle_holders", [])
     if not isinstance(idle, list) or not all(isinstance(h, str) and h for h in idle):
         raise gonk.ConfigError(f"{where}: idle_holders is a list of claim holders, fencing nothing")
@@ -520,6 +524,7 @@ def load_worker(cfg: gonk.Config, path: Path | None = None) -> WorkerConfig:
         cert_dir=cert_dir,
         max_per_repo=max_per_repo,
         idle_holders=tuple(idle),
+        sibling_state_dirs=tuple(Path(gonk.expand(s, cfg.repo)) for s in sibs),
         usage=load_usage(t.get("usage", {}), where, command),
         story=load_story(t.get("story", {}), where),
     )
